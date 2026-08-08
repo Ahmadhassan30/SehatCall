@@ -58,10 +58,44 @@ function phaseIndex(p: CallPhase) {
 
 function statusColor(status: string, colors: ReturnType<typeof useColors>): string {
   const s = status.toLowerCase();
+  // Adherence outcomes from the backend webhook
+  if (s === 'taken') return colors.success;
+  if (s === 'not_taken') return colors.destructive;
+  if (s === 'no_answer') return colors.mutedForeground;
+  // Legacy / active-call statuses
   if (s === 'completed') return colors.success;
   if (s === 'failed') return colors.destructive;
   if (s === 'answered') return colors.primary;
+  // "dispatched" and anything else → neutral pending
   return colors.mutedForeground;
+}
+
+/** Maps raw backend status values to the label shown in the call history list. */
+function statusLabel(status: string): string {
+  switch (status.toLowerCase()) {
+    case 'taken':      return 'Taken';
+    case 'not_taken':  return 'Not Taken';
+    case 'no_answer':  return 'No Answer';
+    case 'dispatched': return 'Pending';
+    case 'completed':  return 'Completed';
+    case 'failed':     return 'Failed';
+    case 'answered':   return 'Answered';
+    default:           return status;
+  }
+}
+
+/** Returns a Feather icon name that matches the call status. */
+function statusIcon(status: string): keyof typeof Feather.glyphMap {
+  switch (status.toLowerCase()) {
+    case 'taken':      return 'check-circle';
+    case 'not_taken':  return 'x-circle';
+    case 'no_answer':  return 'phone-missed';
+    case 'dispatched': return 'clock';
+    case 'completed':  return 'check-circle';
+    case 'failed':     return 'alert-circle';
+    case 'answered':   return 'phone-incoming';
+    default:           return 'circle';
+  }
 }
 
 function formatTime(iso: string): string {
@@ -120,6 +154,8 @@ function PulseRing({ color }: { color: string }) {
 function HistoryRow({ item }: { item: CallLogEntry }) {
   const colors = useColors();
   const sc = statusColor(item.status, colors);
+  const label = statusLabel(item.status);
+  const icon = statusIcon(item.status);
 
   return (
     <View style={[styles.historyRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -128,9 +164,12 @@ function HistoryRow({ item }: { item: CallLogEntry }) {
         <Text style={[styles.historyMed, { color: colors.foreground }]} numberOfLines={1}>
           {item.medication}
         </Text>
-        <Text style={[styles.historyStatus, { color: sc }]}>
-          {item.status}
-        </Text>
+        <View style={styles.historyStatusRow}>
+          <Feather name={icon} size={13} color={sc} style={styles.historyStatusIcon} />
+          <Text style={[styles.historyStatus, { color: sc }]}>
+            {label}
+          </Text>
+        </View>
       </View>
       <View style={styles.historyTime}>
         <Text style={[styles.historyTimeDate, { color: colors.mutedForeground }]}>
@@ -764,7 +803,9 @@ const styles = StyleSheet.create({
   historyDot: { width: 10, height: 10, borderRadius: 5 },
   historyBody: { flex: 1 },
   historyMed: { fontSize: 15, fontFamily: 'Inter_600SemiBold' },
-  historyStatus: { fontSize: 12, fontFamily: 'Inter_500Medium', marginTop: 2, textTransform: 'capitalize' },
+  historyStatusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3 },
+  historyStatusIcon: { marginRight: 4 },
+  historyStatus: { fontSize: 12, fontFamily: 'Inter_500Medium' },
   historyTime: { alignItems: 'flex-end' },
   historyTimeDate: { fontSize: 12, fontFamily: 'Inter_400Regular' },
   historyTimeClock: { fontSize: 12, fontFamily: 'Inter_400Regular', marginTop: 2 },
