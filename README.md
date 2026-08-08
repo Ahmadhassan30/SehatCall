@@ -1,11 +1,11 @@
 <div align="center">
-  <img src="assets/brand/sehatcall-telephone.png" alt="SehatCall antique telephone" width="280" />
+  <img src="assets/brand/sehatcall-telephone.png" alt="SehatCall antique telephone" width="300" />
 
-  # SehatCall
+  <h1><strong>SEHATCALL</strong></h1>
 
-  **Care, carried by a familiar voice.**
+  <h3>CARE THAT CALLS.</h3>
 
-  A bilingual mobile caregiving app that turns medication schedules into clear Urdu phone calls for the people who need them.
+  <strong>A bilingual mobile caregiving app that turns medication schedules into clear Urdu phone calls for the people who need them.</strong>
 
   [![Expo](https://img.shields.io/badge/Expo-54-111111?style=for-the-badge&logo=expo&logoColor=white)](https://expo.dev/)
   [![React Native](https://img.shields.io/badge/React_Native-0.81-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://reactnative.dev/)
