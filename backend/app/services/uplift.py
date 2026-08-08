@@ -22,6 +22,16 @@ from app.services.call_store import append_call, get_all_calls
 
 logger = logging.getLogger("dawa.uplift")
 
+# ---------------------------------------------------------------------------
+# Per-medication assistant cache
+# ---------------------------------------------------------------------------
+# Maps medication_name -> realtimeAssistantId.
+# Populated lazily on first dispatch for each medication; survives the process
+# lifetime. Each medication gets its own Uplift assistant with instructions
+# baked in at creation time, eliminating the PATCH-before-call race condition
+# that would cause concurrent calls to speak the wrong medication name.
+_medication_assistant_cache: dict[str, str] = {}
+
 
 def get_call_log() -> list[dict]:
     """Return persisted call log from SQLite, most-recent first."""
@@ -182,15 +192,70 @@ async def create_assistant(
 
 
 # ---------------------------------------------------------------------------
-# Assistant instructions update (per-call medication injection)
+# Per-medication assistant — lazy creation with caching
+# ---------------------------------------------------------------------------
+
+async def get_or_create_medication_assistant(medication_name: str) -> str:
+    """
+    Return a cached Uplift assistant ID for *medication_name*, creating a new
+    assistant on first use if one is not already cached.
+
+    Each unique medication name gets its own Uplift realtime assistant with the
+    correct instructions baked in at creation time.  This eliminates the
+    PATCH-then-call race condition: because we never mutate a shared assistant,
+    concurrent calls for different medications each use a dedicated assistant
+    and always speak the correct medication name.
+
+    The cache is in-process memory (dict keyed by medication name).  It survives
+    the server process lifetime and resets only on restart, which is acceptable —
+    assistants are lightweight and reusable across calls for the same medication.
+    """
+    if medication_name in _medication_assistant_cache:
+        cached_id = _medication_assistant_cache[medication_name]
+        logger.debug(
+            "MEDICATION_ASSISTANT_CACHE_HIT",
+            extra={"medication": medication_name, "assistantId": cached_id},
+        )
+        return cached_id
+
+    logger.info(
+        "MEDICATION_ASSISTANT_CREATE_START",
+        extra={"medication": medication_name},
+    )
+    data = await create_assistant(
+        name=f"DAWA Urdu - {medication_name}",
+        medication_name=medication_name,
+    )
+    assistant_id: str | None = data.get("realtimeAssistantId")
+    if not assistant_id:
+        raise HTTPException(
+            status_code=502,
+            detail="Uplift did not return a realtimeAssistantId for the new medication assistant.",
+        )
+
+    _medication_assistant_cache[medication_name] = assistant_id
+    logger.info(
+        "MEDICATION_ASSISTANT_CACHED",
+        extra={"medication": medication_name, "assistantId": assistant_id},
+    )
+    return assistant_id
+
+
+# ---------------------------------------------------------------------------
+# Assistant instructions update — kept for bootstrap / admin use only
 # ---------------------------------------------------------------------------
 
 async def update_assistant_instructions(medication_name: str) -> None:
     """
-    PATCH the existing Uplift assistant's instructions to include the specific
-    medication name for the upcoming call.
+    PATCH the base Uplift assistant's instructions to include a specific
+    medication name.
 
-    Called automatically by dispatch_call() — not intended for direct use.
+    NOTE: This function is intentionally NOT called by dispatch_call() anymore.
+    dispatch_call() uses get_or_create_medication_assistant() instead, which
+    avoids the shared-assistant mutation race condition entirely.
+
+    This function remains available for the bootstrap script and any admin
+    tooling that needs to update the base assistant's default instructions.
     """
     if not settings.uplift_assistant_id:
         raise HTTPException(
@@ -241,15 +306,6 @@ async def dispatch_call(medication_name: str = "آپ کی دوائی") -> dict[s
           It does NOT mean the call was answered or that a conversation occurred.
     """
     # Validate call-time required secrets
-    if not settings.uplift_assistant_id:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "UPLIFT_ASSISTANT_ID is not configured. "
-                "Run scripts/create_uplift_assistant.py first, then add the returned ID "
-                "to Replit Secrets as UPLIFT_ASSISTANT_ID and restart the workflow."
-            ),
-        )
     if not settings.test_phone_number:
         raise HTTPException(
             status_code=503,
@@ -259,8 +315,11 @@ async def dispatch_call(medication_name: str = "آپ کی دوائی") -> dict[s
             ),
         )
 
-    # Inject medication name into assistant instructions before calling
-    await update_assistant_instructions(medication_name)
+    # Resolve a per-medication assistant (create on first use, cached thereafter).
+    # This replaces the old PATCH-before-call approach: each medication has its own
+    # Uplift assistant with the correct instructions baked in, so concurrent calls
+    # for different medications never interfere with each other.
+    medication_assistant_id = await get_or_create_medication_assistant(medication_name)
 
     idempotency_key = str(uuid.uuid4())
     log_id = str(uuid.uuid4())
@@ -268,7 +327,7 @@ async def dispatch_call(medication_name: str = "آپ کی دوائی") -> dict[s
     logger.info(
         "UPLIFT_CALL_REQUESTED",
         extra={
-            "assistantId": settings.uplift_assistant_id,
+            "assistantId": medication_assistant_id,
             "to": masked,
             "medication": medication_name,
             "idempotencyKey": idempotency_key,
@@ -276,7 +335,7 @@ async def dispatch_call(medication_name: str = "آپ کی دوائی") -> dict[s
     )
 
     payload = {
-        "assistantId": settings.uplift_assistant_id,
+        "assistantId": medication_assistant_id,
         "to": settings.test_phone_number,
         "metadata": {
             "dawa_log_id": log_id,

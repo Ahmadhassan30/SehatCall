@@ -77,13 +77,26 @@ def _mock_httpx_response(status_code: int, body: dict):
 
 
 def _mock_http(*, patch_status=200, call_status=200, call_body=None):
-    """Build a reusable AsyncMock that handles PATCH then POST for dispatch_call."""
+    """
+    Build a reusable AsyncMock for dispatch_call.
+
+    dispatch_call() now makes two sequential POST requests:
+      1. POST /realtime-assistants  — create a per-medication assistant
+      2. POST /calls               — dispatch the actual outbound call
+
+    patch_status is kept for backward compat but is no longer exercised by
+    dispatch_call (the PATCH path is only used by update_assistant_instructions,
+    which is no longer called during dispatch).
+    """
     call_body = call_body or {"callId": "call-test"}
     mock = AsyncMock()
     mock.__aenter__ = AsyncMock(return_value=mock)
     mock.__aexit__ = AsyncMock(return_value=False)
     mock.patch = AsyncMock(return_value=_mock_httpx_response(patch_status, {}))
-    mock.post = AsyncMock(return_value=_mock_httpx_response(call_status, call_body))
+    # First POST creates the per-medication assistant; second POST dispatches the call.
+    assistant_response = _mock_httpx_response(200, {"realtimeAssistantId": "asst-med-test-xyz"})
+    call_response = _mock_httpx_response(call_status, call_body)
+    mock.post = AsyncMock(side_effect=[assistant_response, call_response])
     return mock
 
 
@@ -226,16 +239,27 @@ def test_dispatch_call_default_medication(mock_client_class, monkeypatch):
 # dispatch_call — missing config
 # ---------------------------------------------------------------------------
 
-def test_dispatch_call_no_assistant_id(monkeypatch):
-    """POST /api/test-call must return 503 when UPLIFT_ASSISTANT_ID is absent."""
+@patch("app.services.uplift.httpx.AsyncClient")
+def test_dispatch_call_no_assistant_id(mock_client_class, monkeypatch):
+    """
+    POST /api/test-call must succeed even when UPLIFT_ASSISTANT_ID is absent.
+
+    dispatch_call() no longer uses the shared UPLIFT_ASSISTANT_ID to place calls.
+    Instead it creates a per-medication assistant on first use via
+    get_or_create_medication_assistant(), so the base assistant config is not required
+    for dispatching.
+    """
     client = _make_client(monkeypatch, assistant_id=None)
+    mock_client_class.return_value = _mock_http(call_body={"callId": "call-no-base-asst"})
     response = client.post(
         "/api/test-call",
         json={"medication_name": "Metformin"},
         headers=ADMIN_HEADER,
     )
-    assert response.status_code == 503
-    assert "UPLIFT_ASSISTANT_ID" in response.json()["detail"]
+    assert response.status_code == 200
+    data = response.json()
+    assert data["callId"] == "call-no-base-asst"
+    assert data["status"] == "dispatched"
 
 
 def test_dispatch_call_no_phone(monkeypatch):
@@ -458,8 +482,16 @@ def test_status_does_not_expose_medication_or_phone(mock_client_class, monkeypat
 # ---------------------------------------------------------------------------
 
 @patch("app.services.uplift.httpx.AsyncClient")
-def test_update_assistant_instructions_called_on_dispatch(mock_client_class, monkeypatch):
-    """PATCH must be called on the assistant before the call is dispatched."""
+def test_per_medication_assistant_created_on_dispatch(mock_client_class, monkeypatch):
+    """
+    dispatch_call() must create a per-medication assistant (POST /realtime-assistants)
+    and then dispatch the call (POST /calls) — no shared-assistant PATCH.
+
+    This verifies the fix for the concurrent-call medication-name race condition:
+    instead of PATCHing a shared assistant before calling (which could be overwritten
+    by a concurrent dispatch), each medication gets its own assistant with the correct
+    instructions baked in at creation time.
+    """
     client = _make_client(monkeypatch)
     mock_http = _mock_http(call_body={"callId": "call-xyz"})
     mock_client_class.return_value = mock_http
@@ -470,10 +502,30 @@ def test_update_assistant_instructions_called_on_dispatch(mock_client_class, mon
         headers=ADMIN_HEADER,
     )
     assert response.status_code == 200
-    mock_http.patch.assert_called_once()
-    # The instructions payload must embed the medication name
-    body = mock_http.patch.call_args.kwargs.get("json") or {}
-    assert "Atorvastatin" in body.get("instructions", "")
+
+    # PATCH must NOT be called — the shared assistant is never mutated during dispatch
+    mock_http.patch.assert_not_called()
+
+    # Two POSTs must have been made: assistant creation + call dispatch
+    assert mock_http.post.call_count == 2
+
+    # First POST must be to /realtime-assistants with medication-aware instructions
+    first_call_args = mock_http.post.call_args_list[0]
+    first_url = first_call_args.args[0] if first_call_args.args else first_call_args.kwargs.get("url", "")
+    assert "realtime-assistants" in first_url, (
+        f"First POST must create a realtime assistant, got URL: {first_url!r}"
+    )
+    first_body = first_call_args.kwargs.get("json") or {}
+    assert "Atorvastatin" in first_body.get("instructions", ""), (
+        "Assistant creation payload must embed the medication name in its instructions"
+    )
+
+    # Second POST must be the call dispatch
+    second_call_args = mock_http.post.call_args_list[1]
+    second_url = second_call_args.args[0] if second_call_args.args else second_call_args.kwargs.get("url", "")
+    assert "/calls" in second_url, (
+        f"Second POST must dispatch the call, got URL: {second_url!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
