@@ -135,3 +135,42 @@ def test_get_call_ids_returns_set():
     ids = get_call_ids()
     assert "call-ids-1" in ids
     assert "call-ids-2" in ids
+
+
+# ---------------------------------------------------------------------------
+# Adherence outcome persistence across simulated server restarts
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("outcome", ["taken", "not_taken", "no_answer"])
+def test_adherence_outcome_survives_restart(outcome: str):
+    """
+    Adherence outcomes (taken / not_taken / no_answer) set via
+    update_call_status() must still be readable after the DB connection is
+    closed and re-opened — i.e. they survive a server restart.
+
+    Workflow:
+      1. Initialise DB and write a call record (status = 'dispatched').
+      2. Simulate a webhook by calling update_call_status() with the outcome.
+      3. Re-initialise the DB (new connection — simulates server restart).
+      4. Read back the record and assert the persisted status matches.
+    """
+    call_id = f"call-persist-{outcome}"
+    log_id = f"log-persist-{outcome}"
+
+    # Step 1 — write initial record
+    init_db()
+    append_call(log_id=log_id, call_id=call_id, medication="TestDrug")
+
+    # Step 2 — simulate webhook updating adherence outcome
+    update_call_status(call_id, outcome)
+
+    # Step 3 — simulate server restart by re-opening the DB
+    _reinit()
+
+    # Step 4 — read back and verify persistence
+    records = get_all_calls()
+    entry = next((r for r in records if r["callId"] == call_id), None)
+    assert entry is not None, f"Record for callId={call_id!r} was lost after restart."
+    assert entry["status"] == outcome, (
+        f"Expected status {outcome!r} after restart, got {entry['status']!r}."
+    )
