@@ -505,3 +505,266 @@ def test_reset_removes_all_dose_events():
 
     remaining = get_recent_dose_events(patient_id="razia-bibi")
     assert remaining == [], f"No dose events should remain after reset, got {remaining}"
+
+
+# ─── Concurrency safety patch (12 tests) ─────────────────────────────────────
+# Verifies that has_active_call() (DB-based primary guard) prevents a second
+# Uplift call from being dispatched while another is in a non-terminal state.
+# No real Uplift calls are placed in any of these tests.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_concurrency_first_call_dispatches():
+    """With no active call, dispatch_call_via_uplift proceeds normally."""
+    from app.services import dawa_store, scheduler as sched
+    event = dawa_store.create_dose_event("razia-bibi", "metformin-500", "21:00", call_status="due")
+
+    async def run():
+        async def mock_post(url, json=None, **kwargs):
+            return MagicMock(is_success=True, json=MagicMock(return_value={"callId": "first-call"}))
+        with patch("app.services.scheduler.settings") as ms, \
+             patch("app.services.scheduler.httpx.AsyncClient") as MC:
+            ms.uplift_assistant_id = "asst-test"
+            ms.test_phone_number = "+92300"
+            ms.upliftai_api_key = "key"
+            mc = AsyncMock(); mc.post = mock_post
+            MC.return_value.__aenter__ = AsyncMock(return_value=mc)
+            MC.return_value.__aexit__ = AsyncMock(return_value=False)
+            await sched._safe_dispatch(event, 0)
+
+    asyncio.get_event_loop().run_until_complete(run())
+    updated = dawa_store.get_dose_event(event["id"])
+    # Should have been dispatched (status changed from due)
+    assert updated["callStatus"] != "due", "First call should have proceeded to dispatch"
+
+
+def test_concurrency_dispatched_blocks_second():
+    """A call in 'dispatched' state must block a second dispatch."""
+    from app.services import dawa_store, scheduler as sched
+    # First call is active in 'dispatched' state
+    dawa_store.create_dose_event("razia-bibi", "metformin-500", "21:00",
+                                 call_id="active-id", call_status="dispatched")
+    # Second event waiting to be dispatched
+    event2 = dawa_store.create_dose_event("razia-bibi", "amlodipine-5", "08:00", call_status="due")
+
+    dispatched = []
+
+    async def run():
+        async def mock_dispatch(e, retry_count=0):
+            dispatched.append(e["id"])
+            return "x"
+        with patch("app.services.scheduler.dispatch_call_via_uplift", new=mock_dispatch):
+            await sched._safe_dispatch(event2, 0)
+
+    asyncio.get_event_loop().run_until_complete(run())
+    assert dispatched == [], "dispatched state must block a second Uplift call"
+
+
+def test_concurrency_dialing_blocks_second():
+    """A call in 'dialing' state must block a second dispatch."""
+    from app.services import dawa_store, scheduler as sched
+    dawa_store.create_dose_event("razia-bibi", "metformin-500", "21:00",
+                                 call_id="active-id", call_status="dialing")
+    event2 = dawa_store.create_dose_event("razia-bibi", "amlodipine-5", "08:00", call_status="due")
+
+    dispatched = []
+
+    async def run():
+        async def mock_dispatch(e, retry_count=0):
+            dispatched.append(e["id"])
+            return "x"
+        with patch("app.services.scheduler.dispatch_call_via_uplift", new=mock_dispatch):
+            await sched._safe_dispatch(event2, 0)
+
+    asyncio.get_event_loop().run_until_complete(run())
+    assert dispatched == [], "dialing state must block a second Uplift call"
+
+
+def test_concurrency_ringing_blocks_second():
+    """A call in 'ringing' state must block a second dispatch."""
+    from app.services import dawa_store, scheduler as sched
+    dawa_store.create_dose_event("razia-bibi", "metformin-500", "21:00",
+                                 call_id="active-id", call_status="ringing")
+    event2 = dawa_store.create_dose_event("razia-bibi", "amlodipine-5", "08:00", call_status="due")
+
+    dispatched = []
+
+    async def run():
+        async def mock_dispatch(e, retry_count=0):
+            dispatched.append(e["id"])
+            return "x"
+        with patch("app.services.scheduler.dispatch_call_via_uplift", new=mock_dispatch):
+            await sched._safe_dispatch(event2, 0)
+
+    asyncio.get_event_loop().run_until_complete(run())
+    assert dispatched == [], "ringing state must block a second Uplift call"
+
+
+def test_concurrency_answered_blocks_second():
+    """A call in 'answered' state must block a second dispatch."""
+    from app.services import dawa_store, scheduler as sched
+    dawa_store.create_dose_event("razia-bibi", "metformin-500", "21:00",
+                                 call_id="active-id", call_status="answered")
+    event2 = dawa_store.create_dose_event("razia-bibi", "amlodipine-5", "08:00", call_status="due")
+
+    dispatched = []
+
+    async def run():
+        async def mock_dispatch(e, retry_count=0):
+            dispatched.append(e["id"])
+            return "x"
+        with patch("app.services.scheduler.dispatch_call_via_uplift", new=mock_dispatch):
+            await sched._safe_dispatch(event2, 0)
+
+    asyncio.get_event_loop().run_until_complete(run())
+    assert dispatched == [], "answered state must block a second Uplift call"
+
+
+def test_concurrency_completed_allows_next():
+    """A call in terminal 'completed' state must NOT block a second dispatch."""
+    from app.services import dawa_store, scheduler as sched
+    dawa_store.create_dose_event("razia-bibi", "metformin-500", "21:00",
+                                 call_id="done-id", call_status="completed")
+    event2 = dawa_store.create_dose_event("razia-bibi", "amlodipine-5", "08:00", call_status="due")
+
+    dispatched = []
+
+    async def run():
+        async def mock_dispatch(e, retry_count=0):
+            dispatched.append(e["id"])
+            return "x"
+        with patch("app.services.scheduler.dispatch_call_via_uplift", new=mock_dispatch):
+            await sched._safe_dispatch(event2, 0)
+
+    asyncio.get_event_loop().run_until_complete(run())
+    assert dispatched == [event2["id"]], "completed is terminal — next call must be allowed"
+
+
+def test_concurrency_failed_allows_next():
+    """A call in terminal 'failed' state must NOT block a second dispatch."""
+    from app.services import dawa_store, scheduler as sched
+    dawa_store.create_dose_event("razia-bibi", "metformin-500", "21:00",
+                                 call_id="fail-id", call_status="failed")
+    event2 = dawa_store.create_dose_event("razia-bibi", "amlodipine-5", "08:00", call_status="due")
+
+    dispatched = []
+
+    async def run():
+        async def mock_dispatch(e, retry_count=0):
+            dispatched.append(e["id"])
+            return "x"
+        with patch("app.services.scheduler.dispatch_call_via_uplift", new=mock_dispatch):
+            await sched._safe_dispatch(event2, 0)
+
+    asyncio.get_event_loop().run_until_complete(run())
+    assert dispatched == [event2["id"]], "failed is terminal — next call must be allowed"
+
+
+def test_concurrency_scheduler_leaves_pending_while_active():
+    """Scan must leave the second dose event pending while first call is active."""
+    from app.services import dawa_store, scheduler as sched
+    karachi = ZoneInfo("Asia/Karachi")
+    # First call is currently active
+    dawa_store.create_dose_event("razia-bibi", "metformin-500", "21:00",
+                                 call_id="active-call", call_status="ringing")
+    # Second event in due state — should not be dispatched
+    event2 = dawa_store.create_dose_event("razia-bibi", "amlodipine-5", "08:00", call_status="due")
+
+    dispatched = []
+
+    async def run():
+        async def mock_dispatch(e, retry_count=0):
+            dispatched.append(e["id"])
+            return "x"
+        with patch("app.services.scheduler.dispatch_call_via_uplift", new=mock_dispatch), \
+             patch("app.services.scheduler._refresh_call_status_from_uplift", new=AsyncMock()):
+            test_now = datetime(2026, 8, 8, 21, 1, 0, tzinfo=karachi)
+            await sched._scan_due_medications(now_override=test_now)
+
+    asyncio.get_event_loop().run_until_complete(run())
+    assert dispatched == [], "Scan must not dispatch while first call is in ringing state"
+
+    # Second event must still be pending
+    still_pending = dawa_store.get_pending_dose_events()
+    pending_ids = [e["id"] for e in still_pending]
+    assert event2["id"] in pending_ids, "Second dose event must remain pending while first is active"
+
+
+def test_concurrency_next_scan_dispatches_after_terminal():
+    """Once the first call becomes terminal, the next scan dispatches the pending event."""
+    from app.services import dawa_store, scheduler as sched
+    karachi = ZoneInfo("Asia/Karachi")
+
+    # First call has now completed (terminal)
+    dawa_store.create_dose_event("razia-bibi", "metformin-500", "21:00",
+                                 call_id="done-call", call_status="completed")
+    # Second event still pending
+    event2 = dawa_store.create_dose_event("razia-bibi", "amlodipine-5", "08:00", call_status="due")
+
+    dispatched = []
+
+    async def run():
+        async def mock_dispatch(e, retry_count=0):
+            dispatched.append(e["id"])
+            dawa_store.update_dose_event(e["id"], call_status="dispatched")
+            return "x"
+        with patch("app.services.scheduler.dispatch_call_via_uplift", new=mock_dispatch), \
+             patch("app.services.scheduler._refresh_call_status_from_uplift", new=AsyncMock()):
+            test_now = datetime(2026, 8, 8, 21, 1, 0, tzinfo=karachi)
+            await sched._scan_due_medications(now_override=test_now)
+
+    asyncio.get_event_loop().run_until_complete(run())
+    assert dispatched == [event2["id"]], (
+        "After first call is terminal, scan must dispatch the pending event"
+    )
+
+
+def test_concurrency_manual_call_returns_409_if_active(monkeypatch):
+    """POST /api/dawa/demo-call must return 409 when another DAWA call is active."""
+    client = _make_p2_client(monkeypatch)
+
+    # Seed an active call in the DB
+    from app.services.dawa_store import create_dose_event
+    create_dose_event("razia-bibi", "metformin-500", "21:00",
+                      call_id="live-call", call_status="ringing")
+
+    resp = client.post(
+        "/api/dawa/demo-call",
+        json={"patientId": "razia-bibi", "medicationId": "metformin-500"},
+    )
+    assert resp.status_code == 409, (
+        f"Expected 409 when active call exists, got {resp.status_code}: {resp.text}"
+    )
+    assert "active" in resp.json().get("detail", "").lower(), (
+        "409 detail must mention 'active'"
+    )
+
+
+def test_concurrency_no_real_uplift_calls_in_tests():
+    """
+    Verify the active-call guard is DB-based (not network-based).
+    has_active_call() must return True for all non-terminal DB states
+    without making any HTTP request.
+    """
+    from app.services import dawa_store, scheduler as sched
+
+    for active_status in ("dispatched", "dialing", "ringing", "answered"):
+        # Each iteration gets a fresh DB via autouse isolate_db
+        ev = dawa_store.create_dose_event(
+            "razia-bibi", "metformin-500", "21:00",
+            call_id=f"call-{active_status}", call_status=active_status,
+        )
+        assert sched.has_active_call() is True, (
+            f"has_active_call() must return True when a call is in '{active_status}' state"
+        )
+        # Clean up for next iteration
+        dawa_store.update_dose_event(ev["id"], call_status="completed")
+
+    # Terminal states must not block
+    for terminal_status in ("completed", "failed"):
+        ev = dawa_store.create_dose_event(
+            "razia-bibi", "metformin-500", "21:00",
+            call_id=f"call-{terminal_status}", call_status=terminal_status,
+        )
+    assert sched.has_active_call() is False, (
+        "has_active_call() must return False when all calls are in terminal states"
+    )

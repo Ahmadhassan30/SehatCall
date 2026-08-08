@@ -1,0 +1,148 @@
+# DAWA P2 — FINAL CONCURRENCY SAFETY PATCH
+
+Do NOT add new features.
+
+There is one potential correctness issue in the P2 scheduler implementation.
+
+The current asyncio.Lock appears to protect only the HTTP dispatch operation.
+
+That is NOT sufficient for Uplift's documented one-concurrent-outbound-call
+limit because the lock may be released immediately after:
+
+POST /calls
+→ status = dispatched
+
+while the actual telephone call remains:
+
+dialing
+ringing
+answered
+
+for much longer.
+
+The system must treat an Uplift call as ACTIVE until it reaches a terminal
+state.
+
+========================================================
+OBJECTIVE
+========================================================
+
+Ensure DAWA never dispatches a second outbound call while another DAWA call
+is in a non-terminal telephony state.
+
+Non-terminal states:
+
+dispatched
+dialing
+ringing
+answered
+
+Terminal states:
+
+completed
+failed
+
+Do not rely solely on asyncio.Lock.locked().
+
+========================================================
+REQUIRED BEHAVIOR
+========================================================
+
+Before any scheduled/retry/manual DAWA dispatch:
+
+1. Inspect current DAWA dose events / known active call state.
+
+2. If any call is in:
+
+dispatched
+dialing
+ringing
+answered
+
+do NOT dispatch another call.
+
+3. Leave the next dose event pending/queued.
+
+4. Poll/update the active call through the existing Uplift sessions/status
+path.
+
+5. Once the active call becomes:
+
+completed
+or
+failed
+
+the next scheduler scan may dispatch the oldest pending due event.
+
+The asyncio.Lock may still protect race conditions around dispatch itself,
+but it must NOT be the only active-call concurrency mechanism.
+
+========================================================
+IMPORTANT
+========================================================
+
+Use the existing database and Uplift status path.
+
+Do NOT add:
+
+Redis
+Celery
+new queue infrastructure
+new database
+webhook
+new frontend
+
+Keep this a minimal patch.
+
+========================================================
+MANUAL DEMO CALLS
+========================================================
+
+POST /api/dawa/demo-call must obey the same active-call guard.
+
+If another DAWA call is already active, return a clear response such as:
+
+409
+{
+  "detail": "Another DAWA call is currently active"
+}
+
+Do not dispatch another Uplift call.
+
+The scheduled path should queue/wait instead of failing permanently.
+
+========================================================
+TESTS
+========================================================
+
+Add tests proving:
+
+1. first call dispatches
+2. call status dispatched blocks second call
+3. dialing blocks second call
+4. ringing blocks second call
+5. answered blocks second call
+6. completed allows next call
+7. failed allows next call
+8. scheduler leaves second event pending while first active
+9. next scan dispatches pending event after first terminal
+10. manual demo-call returns 409 if another call active
+11. no automated test places a real Uplift call
+12. all existing P0/P1/P2 tests still pass
+
+Run the full suite.
+
+Then STOP.
+
+Return only:
+
+## P2 Concurrency Patch Report
+
+- root cause
+- files changed
+- active-call detection mechanism
+- pending-call behavior
+- manual-call 409 behavior
+- tests added
+- total passing tests
+- confirmation that zero real calls were placed

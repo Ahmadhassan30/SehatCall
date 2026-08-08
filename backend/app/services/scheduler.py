@@ -327,16 +327,58 @@ async def _scheduled_dispatch(dose_event_id: str, retry_count: int) -> None:
     await _safe_dispatch(event, retry_count)
 
 
+def has_active_call() -> bool:
+    """
+    Return True if any DAWA dose event is currently in a non-terminal telephony
+    state (dispatched / dialing / ringing / answered).
+
+    This is the PRIMARY active-call guard.  The asyncio.Lock alone is NOT
+    sufficient because the Lock is released as soon as POST /calls returns
+    'dispatched', while the actual telephone call remains active for seconds
+    or minutes longer (dialing → ringing → answered → completed/failed).
+    """
+    return bool(dawa_store.get_active_dose_events())
+
+
 async def _safe_dispatch(dose_event: dict, retry_count: int) -> None:
-    """Acquire the dispatch lock and call Uplift, or queue if busy."""
+    """
+    Two-layer concurrency guard before any Uplift dispatch.
+
+    Layer 1 (primary)  — DB check via has_active_call():
+        Inspects dose_events for any row in a non-terminal telephony state.
+        Persists across asyncio.Lock release cycles.  If any active call
+        exists, the pending event is left in the DB and logged DAWA_CALL_QUEUED;
+        the next scheduler scan will retry once that call reaches a terminal state.
+
+    Layer 2 (secondary) — asyncio.Lock:
+        Guards against concurrent coroutines racing to call dispatch_call_via_uplift
+        at the exact same moment.  Checked ONLY after Layer 1 passes, and
+        re-verified after acquisition (double-checked locking).
+    """
+    # ── Layer 1: DB-based active-call check (primary guard) ──────────────
+    if has_active_call():
+        logger.info(
+            "DAWA_CALL_QUEUED event=%s — active call in non-terminal state, next scan will retry",
+            dose_event["id"],
+        )
+        return
+
+    # ── Layer 2: asyncio.Lock (secondary race-condition guard) ────────────
     lock = _get_lock()
     if lock.locked():
         logger.info(
-            "DAWA_CALL_QUEUED event=%s — another call in progress, will retry at next scan",
+            "DAWA_CALL_QUEUED event=%s — dispatch lock held by concurrent coroutine",
             dose_event["id"],
         )
         return
     async with lock:
+        # Double-check: another coroutine may have slipped in between lock check and acquire
+        if has_active_call():
+            logger.info(
+                "DAWA_CALL_QUEUED event=%s — active call detected after lock acquire",
+                dose_event["id"],
+            )
+            return
         try:
             await dispatch_call_via_uplift(dose_event, retry_count)
         except ValueError as exc:

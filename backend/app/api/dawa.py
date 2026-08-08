@@ -150,6 +150,15 @@ async def demo_call(body: DemoCallRequest) -> dict:
             detail="TEST_PHONE_NUMBER not set in Replit Secrets.",
         )
 
+    # ── Active-call guard (same DB check as the scheduler) ───────────────
+    # Prevents a second Uplift call while one is already in a non-terminal state
+    # (dispatched / dialing / ringing / answered).
+    if sched.has_active_call():
+        raise HTTPException(
+            status_code=409,
+            detail="Another DAWA call is currently active",
+        )
+
     # Create a dose event for this manual dispatch
     dose_event = dawa_store.create_dose_event(
         patient_id=body.patientId,
