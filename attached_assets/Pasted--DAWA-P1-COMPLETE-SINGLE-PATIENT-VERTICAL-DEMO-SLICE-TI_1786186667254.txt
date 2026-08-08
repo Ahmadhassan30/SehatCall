@@ -1,0 +1,1030 @@
+# DAWA P1 — COMPLETE SINGLE-PATIENT VERTICAL DEMO SLICE
+
+TIME-CRITICAL BUILD.
+
+We have very limited time. Do NOT produce another broad architecture plan
+and do NOT expand scope.
+
+Implement one complete, polished DAWA vertical slice on top of the recovered
+P0-A code.
+
+Preserve the working P0-A routes and tests.
+
+========================================================
+PRODUCT
+========================================================
+
+DAWA is an Urdu-first medication companion for low-literacy patients.
+
+Core product statement:
+
+"Every prescription assumes you can read. DAWA doesn't."
+
+The PATIENT does not use the app.
+
+The patient receives a normal Pakistani phone call from Uplift AI.
+
+The mobile application already present in this repository is a CAREGIVER
+dashboard only.
+
+Target demo patient:
+
+Razia Bibi
+
+DAWA must demonstrate:
+
+1. verified medication information;
+2. low-literacy medication recognition;
+3. deterministic medication resolution;
+4. ambiguity rather than guessing;
+5. proactive real Urdu phone calling;
+6. safety around uncertain/different medication instructions;
+7. caregiver visibility.
+
+========================================================
+CRITICAL UPLIFT CONSTRAINT
+========================================================
+
+DO NOT implement custom RPC tools for outbound telephone calls.
+
+Current official Uplift documentation describes custom tool execution as
+RPC performed on a connected user/client device. Direct API execution from
+the hosted agent is not currently something we will depend on.
+
+For outbound calls, use the mechanism explicitly documented in the official
+hackathon guide:
+
+POST /calls
+
+with:
+
+assistantId
+to
+variables
+additionalInstructions
+
+The backend must create a VERIFIED CALL CONTEXT before dialing and pass that
+context to Uplift.
+
+The LLM understands language.
+
+The DAWA backend establishes medication truth BEFORE the call.
+
+========================================================
+P0-A MUST REMAIN WORKING
+========================================================
+
+Do not break or change the semantics of:
+
+GET  /health
+POST /api/test-call
+GET  /api/test-call/status
+
+P0-A continues to use:
+
+UPLIFT_ASSISTANT_ID
+TEST_PHONE_NUMBER
+
+All existing P0-A tests must continue passing.
+
+Do NOT reconnect:
+
+SQLite persistence
+future webhook routes
+medication-specific dynamic assistant creation
+
+to the P0-A routes.
+
+========================================================
+P1 TARGET ARCHITECTURE
+========================================================
+
+Caregiver Expo App
+        |
+        v
+FastAPI
+        |
+        +---- Patient / Medication data
+        |
+        +---- deterministic VMR
+        |
+        +---- verified call-context builder
+        |
+        +---- Uplift /calls
+                    |
+                    v
+             Razia's phone
+
+
+The patient has NO app.
+
+========================================================
+DATABASE DECISION — TIME CRITICAL
+========================================================
+
+Do NOT spend this phase migrating infrastructure to PostgreSQL.
+
+Reuse the existing persistent SQLite foundation for this hackathon demo,
+but structure access behind simple repository/service functions so we can
+replace it with PostgreSQL later.
+
+Do not introduce SQLAlchemy/Alembic/PostgreSQL during this slice.
+
+The objective is a bulletproof demo first.
+
+========================================================
+SEED DATA
+========================================================
+
+Create deterministic idempotent demo seed data for ONE patient.
+
+PATIENT
+
+id:
+razia-bibi
+
+name:
+Razia Bibi
+
+preferred_address:
+Ammi
+
+phone:
+Do NOT hardcode a real phone number.
+
+For actual calling continue using TEST_PHONE_NUMBER from Replit Secrets.
+
+language:
+ur
+
+literacy_mode:
+voice_first
+
+
+MEDICATION A
+
+id:
+metformin-500
+
+clinical_name:
+Metformin
+
+dosage:
+500 mg
+
+dose_instruction:
+1 tablet
+
+food_instruction:
+after dinner
+
+schedule_time:
+21:00
+
+routine_anchor:
+after dinner
+
+nickname:
+raat wali goli
+
+verified cues:
+
+package_color = white
+stripe_color = blue
+tablet_shape = round
+storage_location = bedside drawer
+
+
+MEDICATION B
+
+id:
+amlodipine-5
+
+clinical_name:
+Amlodipine
+
+dosage:
+5 mg
+
+dose_instruction:
+1 tablet
+
+food_instruction:
+none
+
+schedule_time:
+08:00
+
+routine_anchor:
+morning
+
+nickname:
+BP wali goli
+
+verified cues:
+
+package_color = white
+stripe_color = red
+tablet_shape = round
+storage_location = bedside drawer
+
+
+The fact that BOTH packages are white is intentional.
+
+It is the signature ambiguity demonstration.
+
+========================================================
+PERSISTENCE
+========================================================
+
+Create the smallest durable schema required.
+
+Prefer tables approximately:
+
+patients
+medications
+medication_cues
+dose_events
+escalations
+patient_memory
+
+Do not build a generic hospital database.
+
+Required patient_memory use in this slice:
+
+Razia Bibi calls Metformin:
+
+"raat wali goli"
+
+Memory must be separated conceptually from clinical medication truth.
+
+Patient memory may contain:
+
+nickname
+preferred form of address
+routine phrase
+
+Patient memory must NOT overwrite:
+
+clinical medication
+dose
+frequency
+medical instructions
+
+Seed operations must be idempotent.
+
+========================================================
+DETERMINISTIC VMR
+========================================================
+
+Implement:
+
+backend/app/services/vmr.py
+
+VMR = Verified Medication Resolution.
+
+The LLM must NOT determine whether a medicine is verified.
+
+VMR takes observed patient cues and compares them ONLY to caregiver-verified
+medication cues.
+
+Return exactly one of:
+
+UNIQUE
+AMBIGUOUS
+NO_MATCH
+
+
+Suggested response:
+
+{
+  "status": "AMBIGUOUS",
+  "candidateMedicationIds": [
+    "metformin-500",
+    "amlodipine-5"
+  ],
+  "bestDiscriminator": "stripe_color"
+}
+
+Example:
+
+input:
+
+{
+  "package_color": "white"
+}
+
+must return:
+
+AMBIGUOUS
+
+because both medicine boxes are white.
+
+It should identify:
+
+stripe_color
+
+as the best discriminator.
+
+
+Input:
+
+{
+  "package_color": "white",
+  "stripe_color": "blue"
+}
+
+must return:
+
+UNIQUE
+metformin-500
+
+
+Input:
+
+{
+  "package_color": "white",
+  "stripe_color": "red"
+}
+
+must return:
+
+UNIQUE
+amlodipine-5
+
+
+Unknown/unverified cues must NEVER cause the resolver to invent an identity.
+
+No fake confidence percentages.
+
+No embeddings.
+
+No fuzzy semantic drug matching.
+
+No LLM calls.
+
+VMR is deterministic Python.
+
+========================================================
+VMR API
+========================================================
+
+Implement:
+
+POST /api/dawa/vmr/resolve
+
+Example:
+
+{
+  "patientId": "razia-bibi",
+  "cues": {
+    "package_color": "white"
+  }
+}
+
+Response:
+
+{
+  "status": "AMBIGUOUS",
+  "candidateMedicationIds": [...],
+  "bestDiscriminator": "stripe_color"
+}
+
+This endpoint will also help demonstrate the deterministic safety layer
+visually.
+
+========================================================
+VERIFIED CALL CONTEXT
+========================================================
+
+Implement:
+
+backend/app/services/call_context.py
+
+Before DAWA places a patient call, build a concise verified context from
+the database.
+
+It must include:
+
+patient name
+preferred address
+language
+due medication
+nickname
+clinical medication
+dosage
+dose instruction
+food instruction
+routine anchor
+verified recognition cues
+
+AND a BACKEND-GENERATED MEDICATION RESOLUTION TABLE.
+
+For this demo the resolution table should encode facts such as:
+
+white alone
+→ AMBIGUOUS
+→ ask stripe color
+
+white + blue stripe
+→ UNIQUE
+→ Metformin
+
+white + red stripe
+→ UNIQUE
+→ Amlodipine
+
+The backend should derive this from VMR/data rather than hardcoding these
+sentences independently.
+
+========================================================
+UPLIFT CALL BEHAVIOR
+========================================================
+
+Implement a NEW P1 endpoint:
+
+POST /api/dawa/demo-call
+
+Request:
+
+{
+  "patientId": "razia-bibi",
+  "medicationId": "metformin-500"
+}
+
+For this demo endpoint:
+
+- patientId must resolve to an existing patient;
+- medicationId must belong to that patient;
+- actual destination phone number must come from TEST_PHONE_NUMBER;
+- assistantId must come from UPLIFT_ASSISTANT_ID;
+- never accept a destination phone number from the request.
+
+Call:
+
+POST
+https://ap-southeast-1.api.upliftai.org/v1/calls
+
+Use:
+
+variables
+
+and:
+
+additionalInstructions
+
+according to the official Uplift hackathon guide.
+
+Respect the documented size limits.
+
+variables max approximately 3000 chars total.
+
+additionalInstructions max 2000 chars.
+
+Generate an Idempotency-Key.
+
+========================================================
+DAWA CALL INSTRUCTIONS
+========================================================
+
+The call must be natural conversational Urdu.
+
+Use Roman Urdu only in comments/examples if needed.
+The actual assistant should communicate naturally in Urdu.
+
+The call should approximately behave as follows:
+
+Opening:
+
+"Assalam-o-Alaikum Ammi, main DAWA bol rahi hoon.
+Aapki raat wali goli ka waqt ho gaya hai."
+
+Keep sentences SHORT.
+
+Patient may interrupt.
+
+Do not give long medical explanations.
+
+========================================================
+MEDICATION RECOGNITION PROTOCOL
+========================================================
+
+If the patient knows the medication:
+
+continue normally.
+
+If patient says something equivalent to:
+
+"Mujhe parhna nahi aata, kaunsa dabba hai?"
+
+DAWA should use ONLY the verified recognition context supplied by the
+backend.
+
+Example interaction:
+
+Patient:
+"Mujhe parhna nahi aata, kaunsa dabba hai?"
+
+DAWA:
+"Safed dabba dekhein."
+
+Patient:
+"Mere paas do safed dabbe hain."
+
+DAWA must NOT guess.
+
+Use backend-generated resolution information.
+
+DAWA should ask:
+
+"Ek par neeli patti hai aur ek par laal. Kaunsi patti wala dabba hai?"
+
+Patient:
+"Neeli."
+
+DAWA may then identify the backend-verified result as the evening
+Metformin medicine.
+
+IMPORTANT:
+
+The model is not permitted to invent additional visual characteristics.
+
+Only mention cues present in VERIFIED CALL CONTEXT.
+
+========================================================
+SAFETY RULES — NON NEGOTIABLE
+========================================================
+
+DAWA is NOT a doctor.
+
+It may communicate only stored verified instructions.
+
+It must NEVER:
+
+diagnose
+prescribe
+change medication
+change dosage
+recommend stopping medication
+invent a missing instruction
+guess when medication identity remains ambiguous
+tell a patient to double dose
+
+Critical example:
+
+Database says:
+
+1 tablet
+
+Patient says:
+
+"Doctor ne ab do goliyan kaha hai."
+
+DAWA must NOT update or accept that as clinical truth.
+
+Respond briefly in Urdu with the meaning:
+
+"I only have one tablet in the verified instructions.
+I cannot change your dose myself.
+I'll flag this for your caregiver to verify."
+
+Create escalation reason:
+
+UNVERIFIED_MEDICATION_CHANGE
+
+
+If patient says:
+
+"Yaad nahi pehle goli kha li thi ya nahi."
+
+DAWA must NOT say:
+
+"Take another one."
+
+Meaning of response:
+
+"If you're unsure whether you've already taken it, I won't tell you to
+take another dose. Let's have your caregiver check."
+
+Escalation:
+
+POSSIBLE_DOUBLE_DOSE
+or PATIENT_UNSURE
+
+========================================================
+IMPORTANT LIMITATION FOR THIS PHASE
+========================================================
+
+Because we are not relying on client-side RPC tools during an outbound
+telephone call, do NOT pretend that mid-call database writes occur.
+
+For this slice:
+
+- verified truth is generated BEFORE the call;
+- Uplift receives that verified context;
+- actual Uplift session status is polled;
+- do not fabricate adherence events based solely on imagined tool calls.
+
+Do not claim that an escalation has been persisted from the telephone
+conversation unless we have a documented/reliable post-call transcript
+path and have actually implemented it.
+
+It is acceptable for the demo dashboard to show seeded/demo safety examples
+separately from actual live-call state.
+
+Correctness is more important than pretending.
+
+========================================================
+DOSE EVENT
+========================================================
+
+For demo-call dispatch:
+
+create a dose event:
+
+SCHEDULED/DUE
+→ CALLING
+
+Store:
+
+patient
+medication
+scheduled time
+call ID
+call status
+
+Update call lifecycle using actual Uplift session status where possible:
+
+dispatched
+dialing
+ringing
+answered
+completed
+failed
+
+Do NOT infer TAKEN merely because a call completed.
+
+Keep adherence outcome distinct from telephony status.
+
+========================================================
+CAREGIVER APP
+========================================================
+
+Reuse the EXISTING Expo caregiver app.
+
+Do NOT create another frontend.
+
+Do NOT create a patient app.
+
+Remove/ignore generic test UI where necessary and turn the existing screen
+into a polished DAWA caregiver dashboard.
+
+Target visual style:
+
+clean
+minimal
+healthcare
+trustworthy
+high contrast
+large readable status
+mobile-first
+
+Do not overdesign.
+
+========================================================
+CAREGIVER SCREEN
+========================================================
+
+Show:
+
+DAWA
+
+Razia Bibi
+Voice-first medication support
+
+
+TODAY
+
+8:00 AM
+BP wali goli
+Amlodipine 5 mg
+
+9:00 PM
+Raat wali goli
+Metformin 500 mg
+
+
+For evening medicine:
+
+button:
+
+Call Razia now
+
+
+When call active, show actual telephony state:
+
+Calling
+Ringing
+Answered
+Completed
+Failed
+
+
+Also create:
+
+MEDICINE RECOGNITION
+
+A small interactive demo card that calls the REAL backend VMR endpoint.
+
+Buttons/chips for:
+
+White box
+
+then show:
+
+AMBIGUOUS
+Two verified medicines match.
+
+Best question:
+Stripe color?
+
+
+Then buttons:
+
+Blue stripe
+Red stripe
+
+Blue:
+
+RESOLVED
+Raat wali goli
+Metformin 500 mg
+
+Red:
+
+RESOLVED
+BP wali goli
+Amlodipine 5 mg
+
+
+This card is not fake logic.
+
+It MUST call:
+
+POST /api/dawa/vmr/resolve
+
+and render the backend result.
+
+This gives the demo visible proof that DAWA's medication identity layer is
+deterministic rather than an LLM guess.
+
+========================================================
+SAFETY CARD
+========================================================
+
+Add a compact section:
+
+SAFETY RULES
+
+Show two examples based on actual backend policy constants:
+
+"Patient says doctor changed 1 tablet → 2"
+
+Result:
+
+Needs caregiver verification
+DAWA will not change the prescription.
+
+
+"Patient is unsure if dose already taken"
+
+Result:
+
+Do not recommend another dose
+Escalate uncertainty.
+
+Do not make this a giant feature.
+
+========================================================
+API ENDPOINTS
+========================================================
+
+Add only what this slice needs, approximately:
+
+GET  /api/dawa/demo
+POST /api/dawa/vmr/resolve
+POST /api/dawa/demo-call
+GET  /api/dawa/call-status
+
+GET /api/dawa/demo should provide the caregiver UI with the seeded patient,
+medications and current dose-event state.
+
+Do not create a generic CRUD API.
+
+========================================================
+TESTS
+========================================================
+
+All external Uplift calls must be mocked in automated tests.
+
+Add tests for:
+
+1. seed idempotency
+2. two white medicines → AMBIGUOUS
+3. bestDiscriminator = stripe_color
+4. white + blue → Metformin UNIQUE
+5. white + red → Amlodipine UNIQUE
+6. unknown cues → NO_MATCH where appropriate
+7. resolver never returns fake confidence
+8. call context includes only verified cues
+9. patient nickname is separate from clinical medication truth
+10. demo call uses UPLIFT_ASSISTANT_ID
+11. demo call uses TEST_PHONE_NUMBER
+12. phone cannot be supplied by request
+13. variables/additionalInstructions stay within documented limits
+14. idempotency key exists
+15. P0-A routes remain unchanged
+16. no automated test places a real phone call
+17. completing a call does NOT automatically mean TAKEN
+18. Expo VMR UI consumes backend result rather than duplicating VMR logic
+
+Run ALL existing backend tests as well.
+
+========================================================
+DO NOT BUILD
+========================================================
+
+Do NOT add:
+
+Redis
+Celery
+Docker
+LangChain
+RAG
+vector database
+OCR
+computer vision
+multi-patient CRUD
+complex authentication
+push notifications
+full production scheduler
+payment system
+Twilio
+new patient application
+new frontend project
+custom outbound-call RPC tool execution
+unverified webhook integration
+
+Do not resurrect the unverified webhook.
+
+========================================================
+TIME PRIORITY
+========================================================
+
+Priority order:
+
+1. Preserve P0-A.
+2. VMR works correctly.
+3. Demo patient + medications persist.
+4. Verified call context works.
+5. /api/dawa/demo-call works.
+6. Existing caregiver Expo screen works.
+7. Polish only after above passes.
+
+If time is constrained, cut animation/polish BEFORE cutting deterministic
+VMR or call safety.
+
+========================================================
+MANUAL ACCEPTANCE TEST
+========================================================
+
+After implementation I must be able to:
+
+A.
+
+Open caregiver app.
+
+See:
+
+Razia Bibi
+BP wali goli
+Raat wali goli
+
+
+B.
+
+Tap White box.
+
+See:
+
+AMBIGUOUS
+
+and:
+
+Stripe color?
+
+
+C.
+
+Tap Blue stripe.
+
+See:
+
+RESOLVED
+Raat wali goli / Metformin 500 mg
+
+
+D.
+
+Tap Call Razia now.
+
+Backend deliberately sends one real Uplift call request.
+
+My TEST_PHONE_NUMBER rings.
+
+DAWA speaks Urdu using Razia's verified context.
+
+
+E.
+
+During the real call I can say:
+
+"Mujhe parhna nahi aata, kaunsa dabba hai?"
+
+DAWA must describe only verified cues and must not guess if information is
+ambiguous.
+
+
+F.
+
+I can say:
+
+"Doctor ne ab do goliyan kaha hai."
+
+DAWA must refuse to independently change the stored dose and tell me it
+requires caregiver verification.
+
+
+G.
+
+I can say:
+
+"Yaad nahi pehle kha li thi ya nahi."
+
+DAWA must NOT recommend another dose.
+
+
+H.
+
+Caregiver UI shows actual Uplift call lifecycle.
+
+========================================================
+COMPLETION REPORT
+========================================================
+
+When implementation finishes, STOP.
+
+Return:
+
+## P1 Vertical Slice Report
+
+### Backend
+Files and services created/changed.
+
+### Data
+Exact seeded patient, medications and verified cues.
+
+### VMR
+Show test results for:
+white
+white+blue
+white+red
+unknown
+
+### Call context
+Show a REDACTED example of generated variables and additionalInstructions.
+
+Never show the real phone number or API key.
+
+### Uplift
+Explain exactly how /api/dawa/demo-call calls Uplift.
+
+### Caregiver app
+Describe the final screen and interactions.
+
+### Automated validation
+Exact commands and number of passing tests.
+
+### P0-A regression
+Confirm all previous P0-A tests still pass.
+
+### Manual tests remaining
+List only tests that require the developer's real phone/device.
+
+### Known limitations
+Explicitly state that outbound-call RPC tools are NOT being assumed and
+that adherence must not be fabricated.
+
+Then STOP.
+
+Do not begin another task.

@@ -13,7 +13,7 @@ import {
 } from '@expo-google-fonts/inter';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { CallProvider } from '@/context/CallContext';
+import { DawaProvider } from '@/context/DawaContext';
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
@@ -50,9 +50,9 @@ export default function RootLayout() {
         <QueryClientProvider client={queryClient}>
           <GestureHandlerRootView style={{ flex: 1 }}>
             <KeyboardProvider>
-              <CallProvider>
+              <DawaProvider>
                 <RootLayoutNav />
-              </CallProvider>
+              </DawaProvider>
             </KeyboardProvider>
           </GestureHandlerRootView>
         </QueryClientProvider>
