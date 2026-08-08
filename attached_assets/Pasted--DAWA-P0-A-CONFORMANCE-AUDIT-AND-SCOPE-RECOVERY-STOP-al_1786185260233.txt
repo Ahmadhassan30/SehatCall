@@ -1,0 +1,293 @@
+# DAWA P0-A — CONFORMANCE AUDIT AND SCOPE RECOVERY
+
+STOP all feature development.
+
+The current codebase has expanded far beyond the approved DAWA P0-A
+technical spike. Before any real phone call is made, perform a strict
+conformance audit against the original P0-A objective.
+
+DO NOT add new features.
+
+DO NOT start P0-B.
+
+DO NOT place a real phone call.
+
+The only goal of this task is to determine exactly what currently exists,
+identify scope violations, and restore a minimal trustworthy P0-A path
+without breaking already-correct Uplift integration.
+
+--------------------------------------------------
+AUTHORITATIVE P0-A PURPOSE
+--------------------------------------------------
+
+P0-A exists ONLY to prove:
+
+FastAPI
+→ Uplift Singapore API
+→ one realtime Urdu assistant
+→ one deliberate outbound Pakistani phone call
+→ short two-way Urdu conversation
+→ call lifecycle/status inspection.
+
+Nothing else is required.
+
+--------------------------------------------------
+EXPECTED P0-A ARCHITECTURE
+--------------------------------------------------
+
+The authoritative runtime path must be:
+
+UPLIFTAI_API_KEY
+        ↓
+one bootstrap-created realtime assistant
+        ↓
+UPLIFT_ASSISTANT_ID stored in environment
+        ↓
+POST /api/test-call
+        ↓
+POST Uplift /calls
+        ↓
+TEST_PHONE_NUMBER
+        ↓
+real Pakistani phone call
+
+There must NOT be a requirement to create a different assistant for each
+medication or each call.
+
+--------------------------------------------------
+STEP 1 — AUDIT CURRENT CODE
+--------------------------------------------------
+
+Inspect the actual source code, not previous task descriptions.
+
+Report specifically:
+
+1. Does POST /api/test-call use exactly the configured
+   UPLIFT_ASSISTANT_ID?
+
+2. Can POST /api/test-call create a new assistant dynamically?
+
+3. Is any assistant created based on a medication name?
+
+4. What exactly does the "per-medication assistant cache" do?
+
+5. Does the bootstrap-created UPLIFT_ASSISTANT_ID remain the authoritative
+   assistant for the P0-A test path?
+
+6. What request body does POST /api/test-call currently accept?
+
+7. What external HTTP request is ultimately made when POST /api/test-call
+   runs?
+
+Show the exact Uplift method, URL path, and JSON field names, but DO NOT
+show secrets or the real phone number.
+
+--------------------------------------------------
+STEP 2 — VERIFY AGAINST OFFICIAL HACKATHON GUIDE
+--------------------------------------------------
+
+The official Uplift AI Voice AI Hackathon Guide in the project is the
+authoritative source for P0-A.
+
+Verify that the implementation uses:
+
+Singapore base URL:
+https://ap-southeast-1.api.upliftai.org/v1
+
+Assistant creation:
+POST /realtime-assistants
+
+Outbound calling:
+POST /calls
+
+Status:
+GET /realtime-assistants/{assistantId}/sessions
+
+Do not infer undocumented Uplift behavior.
+
+IMPORTANT:
+
+The current implementation claims an Uplift call-completion webhook.
+
+The provided hackathon guide does not document such a webhook.
+
+Therefore:
+
+- identify exactly where the webhook behavior came from;
+- if it is supported by another OFFICIAL Uplift document already available
+  in project context, identify that official source precisely;
+- otherwise mark the webhook integration UNVERIFIED;
+- do not rely on it for P0-A.
+
+Do not use unofficial blogs or invented assumptions.
+
+--------------------------------------------------
+STEP 3 — REMOVE P0-A COUPLING TO FUTURE FEATURES
+--------------------------------------------------
+
+The following components were outside approved P0-A scope:
+
+- SQLite persistence
+- call_store
+- adherence outcome parsing
+- webhook processing
+- admin-token authentication
+- Expo/mobile caregiver application
+- medication-specific call behavior
+- medication request input
+- call-history UI
+- persistent call history
+- per-medication assistant creation/caching
+
+DO NOT necessarily delete unrelated files yet if deletion risks breaking
+working code.
+
+Instead, ensure the canonical P0-A execution path has ZERO dependency on
+them.
+
+Specifically:
+
+POST /api/test-call for P0-A must:
+
+- require no request body;
+- use TEST_PHONE_NUMBER from environment;
+- use UPLIFT_ASSISTANT_ID from environment;
+- dispatch exactly one call through Uplift /calls;
+- not create an assistant;
+- not access SQLite;
+- not require an admin token;
+- not require medication input;
+- not write adherence state;
+- not depend on a webhook;
+- not depend on the mobile application.
+
+GET /api/test-call/status must:
+
+- use UPLIFT_ASSISTANT_ID;
+- query Uplift session status;
+- not require SQLite or a webhook.
+
+GET /health must remain independent of these future components.
+
+If necessary, create a clearly isolated P0-A router or simplify the
+existing routes, but make the smallest change possible.
+
+--------------------------------------------------
+STEP 4 — TEST ASSISTANT BOOTSTRAP
+--------------------------------------------------
+
+Verify:
+
+cd backend
+python -m scripts.create_uplift_assistant
+
+works with:
+
+UPLIFTAI_API_KEY present
+UPLIFT_ASSISTANT_ID absent
+
+It must:
+
+- create ONE assistant;
+- use the Singapore endpoint;
+- use the official Urdu stack from the hackathon guide;
+- print realtimeAssistantId;
+- instruct the developer to store it as UPLIFT_ASSISTANT_ID;
+- never place a phone call.
+
+Do not actually execute assistant creation if doing so would consume
+credits or create another remote assistant unnecessarily.
+
+If an assistant already exists, validate the code path with mocked HTTP
+instead.
+
+--------------------------------------------------
+STEP 5 — AUTOMATED TESTS
+--------------------------------------------------
+
+Ensure focused tests verify the recovered canonical P0-A path:
+
+1. /health returns 200.
+2. app boots without UPLIFT_ASSISTANT_ID.
+3. /api/test-call requires assistant ID only at invocation time.
+4. /api/test-call requires phone number only at invocation time.
+5. /api/test-call accepts no medication-dependent behavior.
+6. outbound request uses Singapore base URL.
+7. outbound request path is /calls.
+8. payload contains configured assistantId and configured phone.
+9. Idempotency-Key is included.
+10. no real Uplift request occurs during tests.
+11. status endpoint calls the official sessions endpoint.
+12. dispatched remains dispatched and is never interpreted as answered.
+13. P0-A routes do not require SQLite.
+14. P0-A routes do not require webhook configuration.
+15. P0-A routes do not require mobile/admin authentication.
+
+Run the tests.
+
+No real calls.
+
+--------------------------------------------------
+STEP 6 — DO NOT DELETE FUTURE WORK BLINDLY
+--------------------------------------------------
+
+Some scope-crept code may be useful later.
+
+If it can be safely isolated, leave it unreferenced and clearly mark it as
+outside P0-A.
+
+If it directly changes or contaminates P0-A behavior, refactor only enough
+to restore the approved P0-A execution path.
+
+Do not perform a broad rewrite.
+
+Do not build anything new.
+
+--------------------------------------------------
+COMPLETION REPORT
+--------------------------------------------------
+
+STOP after the audit/recovery and return:
+
+## P0-A Conformance Audit
+
+### Canonical call path
+Describe exact runtime path from POST /api/test-call to Uplift.
+
+### Assistant lifecycle
+State whether one configured UPLIFT_ASSISTANT_ID is now authoritative.
+
+### Scope violations found
+List every future feature that had been coupled into P0-A.
+
+### Changes made
+List exact files changed and why.
+
+### Uplift webhook verification
+State:
+SUPPORTED BY OFFICIAL UPLIFT SOURCE
+or
+UNVERIFIED
+
+and identify the official source if supported.
+
+### Future code retained but isolated
+List SQLite/mobile/webhook/adherence/etc. files retained but no longer
+required by P0-A.
+
+### Automated validation
+List exact commands and test results.
+
+### Manual operation remaining
+Give the exact sequence for:
+1. obtain/save assistant ID if needed;
+2. restart backend;
+3. check /health;
+4. deliberately invoke POST /api/test-call;
+5. answer phone;
+6. inspect /api/test-call/status.
+
+### Explicit confirmation
+Confirm that NO real call was placed during this audit.
+
+Then STOP.
