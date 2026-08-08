@@ -319,6 +319,28 @@ async def test_bootstrap_uses_singapore_endpoint_and_returns_assistant_id(monkey
         "Bootstrap must NOT POST to /calls"
     )
 
+    # ── Payload structure assertions ─────────────────────────────────────
+    # Verify config is a dict object (not a string / missing / list)
+    sent_json = mock_http.post.call_args.kwargs.get("json") or (
+        mock_http.post.call_args.args[1] if len(mock_http.post.call_args.args) > 1 else None
+    )
+    assert sent_json is not None, "POST must send a json= payload"
+    assert isinstance(sent_json, dict), (
+        f"Top-level payload must be a dict; got {type(sent_json).__name__}"
+    )
+    assert "config" in sent_json, (
+        f"Payload must have a 'config' key; keys found: {sorted(sent_json.keys())}"
+    )
+    config = sent_json["config"]
+    assert isinstance(config, dict), (
+        f"payload['config'] must be a dict (not {type(config).__name__}); "
+        "check for accidental json.dumps() / model_dump_json() serialization"
+    )
+    for section in ("agent", "stt", "tts", "llm"):
+        assert section in config and isinstance(config[section], dict), (
+            f"config['{section}'] must be a dict object; got {type(config.get(section)).__name__}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 6. Future routes must be unreachable

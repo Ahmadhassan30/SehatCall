@@ -278,25 +278,45 @@ async def create_assistant(
     """
     logger.info("UPLIFT_ASSISTANT_CREATE_REQUEST", extra={"name": name})
 
+    instructions = _build_instructions(medication_name)
     payload = {
         "name": name,
-        "stt": {
-            "provider": "soniox",
-            "model": "stt-rt-v4",
-            "language": "ur",
+        "config": {
+            "agent": {
+                "instructions": instructions,
+                "initialGreeting": True,
+                "greetingInstructions": "السلام علیکم! میں DAWA کا ادویات یاد دہانی اسسٹنٹ ہوں۔",
+            },
+            "stt": {
+                "default": {
+                    "provider": "soniox",
+                    "model": "stt-rt-v4",
+                    "language": "ur",
+                }
+            },
+            "tts": {
+                "default": {
+                    "provider": "upliftai",
+                    "voiceId": "helpdesk-agent",
+                    "outputFormat": "MP3_22050_32",
+                }
+            },
+            "llm": {
+                "default": {
+                    "provider": "google",
+                    "model": "gemini-2.5-flash",
+                }
+            },
         },
-        "tts": {
-            "provider": "upliftai",
-            "voiceId": "helpdesk-agent",
-            "outputFormat": "MP3_22050_32",
-        },
-        "llm": {
-            "provider": "google",
-            "model": "gemini-2.5-flash",
-        },
-        "initialGreeting": True,
-        "instructions": _build_instructions(medication_name),
     }
+
+    # Structural diagnostics — safe to log (no secrets)
+    logger.info(
+        "UPLIFT_ASSISTANT_PAYLOAD_SHAPE payload_type=%s config_type=%s config_keys=%s",
+        type(payload).__name__,
+        type(payload["config"]).__name__,
+        sorted(payload["config"].keys()),
+    )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(

@@ -1,0 +1,240 @@
+# URGENT SURGICAL FIX — Uplift assistant creation 400
+
+Do NOT add features.
+Do NOT refactor unrelated DAWA code.
+Do NOT touch P1/P2/scheduler/VMR/frontend.
+Do NOT place a phone call.
+
+We manually ran:
+
+cd backend
+python scripts/create_uplift_assistant.py
+
+Uplift responded:
+
+400
+['config must be an object']
+
+The request is reaching Uplift successfully, so investigate ONLY the
+assistant-creation request serialization.
+
+==================================================
+AUTHORITATIVE REQUIRED REQUEST SHAPE
+==================================================
+
+The official Uplift hackathon guide defines assistant creation as:
+
+POST
+https://ap-southeast-1.api.upliftai.org/v1/realtime-assistants
+
+Content-Type: application/json
+
+Top-level JSON must look structurally like:
+
+{
+  "name": "DAWA ...",
+  "config": {
+    "agent": {
+      "instructions": "...",
+      "initialGreeting": true,
+      "greetingInstructions": "..."
+    },
+    "stt": {
+      "default": {
+        "provider": "soniox",
+        "model": "stt-rt-v4",
+        "language": "ur"
+      }
+    },
+    "tts": {
+      "default": {
+        "provider": "upliftai",
+        "voiceId": "helpdesk-agent",
+        "outputFormat": "MP3_22050_32"
+      }
+    },
+    "llm": {
+      "default": {
+        "provider": "google",
+        "model": "gemini-2.5-flash"
+      }
+    }
+  }
+}
+
+The important immediate issue:
+
+`config` MUST reach httpx as a Python dict / JSON object.
+
+It must NOT be:
+
+- json.dumps(config)
+- str(config)
+- a JSON-encoded string
+- a list
+- nested under the wrong field
+- sent via form data
+
+==================================================
+AUDIT THE ACTUAL CODE
+==================================================
+
+Inspect:
+
+backend/scripts/create_uplift_assistant.py
+backend/app/services/uplift.py
+
+and any helper involved in assistant creation.
+
+Trace the exact value passed to:
+
+httpx.AsyncClient.post(...)
+
+Determine:
+
+1. Python type of the complete payload
+2. Python type of payload["config"]
+3. whether json.dumps() is being used anywhere
+4. whether `.model_dump_json()` is being used instead of `.model_dump()`
+5. whether `data=` is being used instead of `json=`
+6. whether a helper accidentally serializes config before sending
+
+==================================================
+REQUIRED HTTPX FORM
+==================================================
+
+The final request should conceptually be:
+
+payload = {
+    "name": ...,
+    "config": {
+        ...
+    }
+}
+
+assert isinstance(payload, dict)
+assert isinstance(payload["config"], dict)
+
+response = await client.post(
+    f"{BASE_URL}/realtime-assistants",
+    headers=...,
+    json=payload,
+)
+
+Do NOT double-serialize the JSON.
+
+If Pydantic models are used, use a dictionary representation such as:
+
+model.model_dump(...)
+
+NOT:
+
+model.model_dump_json(...)
+
+when assigning the object into the HTTP payload.
+
+==================================================
+SAFE DIAGNOSTICS
+==================================================
+
+Before sending, it is okay to log ONLY:
+
+type(payload).__name__
+type(payload["config"]).__name__
+sorted(payload.keys())
+sorted(payload["config"].keys())
+
+Expected:
+
+payload type = dict
+config type = dict
+
+Do NOT log:
+
+UPLIFTAI_API_KEY
+Authorization header
+TEST_PHONE_NUMBER
+other secrets
+
+Do NOT print the entire instructions unless necessary.
+
+==================================================
+DO NOT CHANGE PROVIDERS YET
+==================================================
+
+The current failure is specifically:
+
+config must be an object
+
+Do NOT react to this by changing STT/TTS/LLM providers.
+
+Keep the hackathon-guide configuration for now:
+
+Soniox stt-rt-v4 / ur
+Uplift helpdesk-agent
+Gemini 2.5 Flash
+
+If, AFTER fixing the config-object serialization, Uplift returns a NEW
+provider/model validation error, report that exact new error instead of
+guessing or changing multiple things at once.
+
+==================================================
+TEST
+==================================================
+
+Add/update a mocked test that captures the outgoing request and proves:
+
+isinstance(payload, dict)
+isinstance(payload["config"], dict)
+
+and verifies:
+
+config.agent is an object
+config.stt is an object
+config.tts is an object
+config.llm is an object
+
+Also verify exactly one POST goes to:
+
+/realtime-assistants
+
+and zero POSTs go to:
+
+/calls
+
+Run relevant tests.
+
+Do NOT make the real assistant request during automated validation.
+
+==================================================
+COMPLETION
+==================================================
+
+After the surgical patch, STOP.
+
+Report:
+
+## Assistant Payload Fix
+
+Root cause:
+Exact file/line-level cause.
+
+Before:
+Describe the incorrect config representation.
+
+After:
+Describe corrected representation.
+
+Outgoing structure:
+Show a REDACTED structural example.
+
+Tests:
+Exact result.
+
+Real request:
+Confirm no real assistant or phone call was created during the repair.
+
+Then tell me to manually rerun:
+
+cd backend
+python scripts/create_uplift_assistant.py
