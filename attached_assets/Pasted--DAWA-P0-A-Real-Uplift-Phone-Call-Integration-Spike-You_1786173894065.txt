@@ -1,0 +1,690 @@
+# DAWA — P0-A: Real Uplift Phone Call Integration Spike
+
+You are implementing the first gated technical spike for **DAWA**, an Urdu-first medication companion for low-literacy patients.
+
+This is NOT a request to build the full product.
+
+The sole purpose of this phase is to prove that a minimal FastAPI backend running on Replit can create/configure an Uplift realtime assistant and use Uplift's official outbound calling API to place a **real Urdu AI phone call to a Pakistani phone number**.
+
+## Authoritative source
+
+The project includes the official:
+
+**“Uplift AI — Voice AI Hackathon Guide”**
+
+Treat that guide as the source of truth for all Uplift API behavior in this phase.
+
+Do not invent endpoints, request fields, models, regions, or error semantics that conflict with the guide.
+
+Important facts from the guide that must be respected:
+
+* Pakistani outbound calling works ONLY through the Singapore region.
+* Base URL:
+  `https://ap-southeast-1.api.upliftai.org/v1`
+* Assistant creation:
+  `POST /realtime-assistants`
+* Outbound call:
+  `POST /calls`
+* Call/session status:
+  `GET /realtime-assistants/{assistantId}/sessions`
+* Calls may target Pakistani numbers only.
+* `dispatched` does NOT mean answered.
+* Uplift has a one-concurrent-outbound-call-per-organization limit.
+* Poll call status politely, approximately every 2–5 seconds.
+* Uplift API credentials must remain server-side.
+* Use an `Idempotency-Key` for outbound call safety.
+
+---
+
+# PHASE GOAL
+
+At the end of P0-A, I must be able to:
+
+1. Run the FastAPI backend on Replit.
+2. Create one simple Uplift Urdu test assistant.
+3. Save/use that assistant ID.
+4. Trigger an API request from FastAPI.
+5. Receive a REAL call on my own Pakistani phone.
+6. Answer it.
+7. Hear the AI greet me in Urdu.
+8. Speak back to it naturally.
+9. Complete a short two-way Urdu conversation.
+10. Inspect the call lifecycle/status afterward.
+
+Nothing beyond this is required.
+
+---
+
+# STRICT SCOPE
+
+Implement ONLY:
+
+* Python backend
+* FastAPI
+* Uplift assistant creation helper
+* Uplift outbound call helper
+* call status/session lookup
+* minimal health endpoint
+* structured logging
+* small focused tests
+* concise README instructions for this spike
+
+Do NOT implement:
+
+* React
+* React Native
+* Expo
+* caregiver dashboard
+* PostgreSQL
+* SQLAlchemy
+* Alembic
+* Redis
+* patient memory
+* medication database
+* VMR
+* medication identification
+* adherence tracking
+* scheduler
+* automatic medicine reminders
+* tool calling
+* RPC
+* authentication
+* multiple patients
+* real DAWA medication behavior
+* OCR
+* RAG
+* LangChain
+* Docker
+* Celery
+* background queues
+* microservices
+
+This phase is an isolated integration spike.
+
+---
+
+# TECHNOLOGY
+
+Use:
+
+* Python 3
+* FastAPI
+* Uvicorn
+* Pydantic
+* `httpx` for Uplift HTTP calls
+* pytest for focused backend tests
+
+Prefer the smallest dependency set possible.
+
+---
+
+# PROJECT STRUCTURE
+
+Create something approximately like:
+
+```text
+backend/
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── config.py
+│   │
+│   ├── api/
+│   │   ├── __init__.py
+│   │   └── test_call.py
+│   │
+│   └── services/
+│       ├── __init__.py
+│       └── uplift.py
+│
+├── scripts/
+│   └── create_uplift_assistant.py
+│
+├── tests/
+│   ├── test_health.py
+│   └── test_uplift_service.py
+│
+└── requirements.txt
+
+README.md
+```
+
+Reasonable small deviations are allowed if Replit requires them.
+
+Do not create unnecessary abstractions or architectural layers.
+
+---
+
+# ENVIRONMENT / SECRETS
+
+Read these only from environment variables / Replit Secrets:
+
+```text
+UPLIFTAI_API_KEY
+TEST_PHONE_NUMBER
+UPLIFT_ASSISTANT_ID
+```
+
+`UPLIFT_ASSISTANT_ID` may initially be missing because the assistant must first be created.
+
+Never:
+
+* hardcode the API key
+* print the full API key
+* return the API key from an endpoint
+* put the API key into README
+* write the API key into source code
+* commit any real phone number into source files
+
+Fail clearly if a required secret is absent.
+
+---
+
+# CONFIGURATION
+
+Define one canonical Uplift base URL:
+
+```text
+https://ap-southeast-1.api.upliftai.org/v1
+```
+
+Do not use the US endpoint anywhere in the outbound-call implementation.
+
+Keep the base URL centralized in configuration.
+
+---
+
+# STEP 1 — HEALTH ENDPOINT
+
+Implement:
+
+```http
+GET /health
+```
+
+Return something simple such as:
+
+```json
+{
+  "status": "ok",
+  "service": "dawa-p0"
+}
+```
+
+This must not depend on Uplift being available.
+
+---
+
+# STEP 2 — UPLIFT SERVICE
+
+Create a small dedicated Uplift service.
+
+It should own:
+
+1. authentication headers
+2. assistant creation
+3. outbound call dispatch
+4. session/call status retrieval
+5. Uplift HTTP error normalization
+
+Do not scatter raw Uplift HTTP calls across route files.
+
+Use an async `httpx.AsyncClient`.
+
+All Uplift calls must use:
+
+```http
+Authorization: Bearer <UPLIFTAI_API_KEY>
+Content-Type: application/json
+```
+
+where appropriate.
+
+---
+
+# STEP 3 — CREATE THE TEST ASSISTANT
+
+Implement a one-time CLI/bootstrap script:
+
+```text
+backend/scripts/create_uplift_assistant.py
+```
+
+It must call:
+
+```http
+POST https://ap-southeast-1.api.upliftai.org/v1/realtime-assistants
+```
+
+Create a simple assistant named approximately:
+
+```text
+DAWA P0 Urdu Call Test
+```
+
+Use the official hackathon guide's proven default Urdu call stack unless the current guide explicitly specifies otherwise:
+
+STT:
+
+```json
+{
+  "provider": "soniox",
+  "model": "stt-rt-v4",
+  "language": "ur"
+}
+```
+
+TTS:
+
+```json
+{
+  "provider": "upliftai",
+  "voiceId": "helpdesk-agent",
+  "outputFormat": "MP3_22050_32"
+}
+```
+
+LLM:
+
+```json
+{
+  "provider": "google",
+  "model": "gemini-2.5-flash"
+}
+```
+
+Agent behavior:
+
+* initialGreeting = true
+* speak naturally and briefly
+* communicate in conversational Urdu
+* identify itself as a DAWA integration-test assistant
+* greet the callee
+* ask how they are
+* allow a short natural conversation
+* do NOT provide medical advice
+* do NOT discuss medication yet
+* do NOT mention internal implementation details
+
+Use Urdu/Nastaliq in the actual assistant instructions where that improves behavior, while keeping implementation comments in English.
+
+After successful assistant creation:
+
+* parse `realtimeAssistantId`
+* print the assistant ID clearly
+* print instructions telling the developer to save it in Replit Secrets as:
+
+```text
+UPLIFT_ASSISTANT_ID
+```
+
+Do NOT print the API key.
+
+If assistant creation fails, show a useful sanitized error.
+
+Do not automatically create an assistant every time the FastAPI server starts.
+
+---
+
+# STEP 4 — TEST CALL ENDPOINT
+
+Implement:
+
+```http
+POST /api/test-call
+```
+
+This endpoint should NOT accept arbitrary phone numbers from the request body during this spike.
+
+Use:
+
+```text
+TEST_PHONE_NUMBER
+```
+
+from server-side environment configuration.
+
+Use:
+
+```text
+UPLIFT_ASSISTANT_ID
+```
+
+from server-side configuration.
+
+Call:
+
+```http
+POST https://ap-southeast-1.api.upliftai.org/v1/calls
+```
+
+with:
+
+```json
+{
+  "assistantId": "<configured assistant id>",
+  "to": "<configured test phone>"
+}
+```
+
+Generate a unique but traceable `Idempotency-Key` for each intentional test-call attempt.
+
+Return only safe information to the caller, e.g.:
+
+```json
+{
+  "callId": "...",
+  "status": "dispatched"
+}
+```
+
+Do not expose secrets.
+
+Important:
+
+`dispatched` must not be described as "answered" or "successful conversation".
+
+It only means the request was accepted and dialing was initiated.
+
+---
+
+# STEP 5 — CALL STATUS
+
+Implement a minimal endpoint such as:
+
+```http
+GET /api/test-call/status
+```
+
+Use the official Uplift sessions endpoint:
+
+```text
+/realtime-assistants/{assistantId}/sessions?limit=10
+```
+
+Return a compact normalized view of recent sessions sufficient to inspect:
+
+```text
+dispatched
+dialing
+ringing
+answered
+completed
+failed
+failureReason
+```
+
+Do NOT aggressively poll Uplift from the backend.
+
+The API should simply provide status when requested.
+
+If a future UI polls it, the intended cadence is 2–5 seconds.
+
+---
+
+# STEP 6 — ERROR HANDLING
+
+Handle the documented Uplift cases deliberately.
+
+At minimum distinguish:
+
+* 400 invalid request / number
+* 401 invalid API key
+* 402 insufficient credits
+* 404 assistant not found
+* 409 number busy
+* 409 duplicate in flight
+* 429 concurrent outbound call limit
+* 429 platform line capacity
+* 429 API throttling
+* 500 Uplift infrastructure error
+
+Do not expose raw secret-bearing request headers.
+
+Return useful sanitized FastAPI responses.
+
+When possible preserve Uplift's useful error message.
+
+Do not implement complicated retry loops yet.
+
+For this spike, clear error reporting is more important than automated retries.
+
+---
+
+# STEP 7 — LOGGING
+
+Add concise structured logs for:
+
+```text
+UPLIFT_ASSISTANT_CREATE_REQUEST
+UPLIFT_ASSISTANT_CREATED
+UPLIFT_CALL_REQUESTED
+UPLIFT_CALL_DISPATCHED
+UPLIFT_CALL_STATUS_CHECKED
+UPLIFT_API_ERROR
+```
+
+Never log:
+
+* API keys
+* Authorization headers
+* full secrets
+
+Avoid unnecessarily logging the complete phone number.
+
+Mask it if included, e.g.:
+
+```text
++92******4567
+```
+
+---
+
+# STEP 8 — TESTS
+
+Write focused tests that do NOT spend Uplift credits.
+
+Mock external Uplift HTTP requests.
+
+At minimum test:
+
+1. `/health`
+2. configuration validation
+3. correct Singapore base URL use
+4. outbound call payload formation
+5. authorization header exists without exposing it
+6. error normalization for representative Uplift failures
+7. `dispatched` remains represented as dispatched
+8. status/session normalization
+
+Tests must not place a real phone call.
+
+---
+
+# STEP 9 — README
+
+Create a concise P0 README section explaining exactly how to test manually.
+
+It should contain:
+
+## Required Replit Secrets
+
+```text
+UPLIFTAI_API_KEY
+TEST_PHONE_NUMBER
+```
+
+## Create assistant
+
+Provide the exact command to run the bootstrap script.
+
+Example format:
+
+```bash
+cd backend
+python scripts/create_uplift_assistant.py
+```
+
+After it returns an assistant ID:
+
+Save that value as:
+
+```text
+UPLIFT_ASSISTANT_ID
+```
+
+in Replit Secrets.
+
+Restart/reload if required.
+
+## Start backend
+
+Provide exact Replit-compatible command.
+
+## Check health
+
+```text
+GET /health
+```
+
+## Place call
+
+```text
+POST /api/test-call
+```
+
+## Check status
+
+```text
+GET /api/test-call/status
+```
+
+Also explicitly state:
+
+> Test only using your own phone number or another consenting tester.
+
+---
+
+# MANUAL ACCEPTANCE CRITERIA
+
+P0-A is complete ONLY when the developer can verify all of the following:
+
+### Backend
+
+* FastAPI boots successfully on Replit.
+* `/health` returns 200.
+* API key is absent from client-visible/source output.
+
+### Assistant
+
+* The bootstrap script creates a realtime assistant through the Singapore Uplift endpoint.
+* A valid `realtimeAssistantId` is obtained.
+
+### Real phone call
+
+* `POST /api/test-call` returns a real Uplift `callId`.
+* The configured Pakistani phone physically rings.
+* The developer answers.
+* The assistant greets them in Urdu.
+* The developer speaks Urdu back.
+* The assistant understands/responds sufficiently for a short two-way conversation.
+
+### Status
+
+* Recent Uplift session state can be queried.
+* The system does not incorrectly equate `dispatched` with `answered`.
+* Completed/failed state and failure reason can be inspected.
+
+---
+
+# IMPORTANT GO / NO-GO RULE
+
+Do NOT proceed to:
+
+* PostgreSQL
+* VMR
+* memory
+* medication data
+* caregiver UI
+* scheduling
+* tool calling
+
+until this real outbound Urdu call works.
+
+If real calling fails:
+
+1. inspect the actual Uplift response,
+2. verify the Singapore base URL,
+3. verify assistant ID,
+4. verify Pakistani phone-number format,
+5. verify credits,
+6. verify no other call is currently active,
+7. report the concrete blocker.
+
+Do NOT respond to an integration failure by building unrelated DAWA features.
+
+---
+
+# QUALITY REQUIREMENTS
+
+* Keep the implementation small and readable.
+* Prefer explicit code over framework magic.
+* Use proper async HTTP calls.
+* Add type hints.
+* Use Pydantic/config validation.
+* Keep Uplift-specific code isolated.
+* Avoid premature abstractions.
+* Avoid unnecessary dependencies.
+* Never expose credentials.
+* Never claim a phone call worked unless it was actually manually tested.
+
+---
+
+# COMPLETION REPORT FORMAT
+
+When finished, STOP and provide exactly this report:
+
+## P0-A Implementation
+
+### Files created/changed
+
+List them.
+
+### Uplift integration
+
+Explain:
+
+* assistant creation path
+* outbound call path
+* status path
+* Singapore endpoint usage
+
+### Security
+
+Explain where secrets are read and confirm they are not exposed.
+
+### Automated validation
+
+Report exact tests/commands and results.
+
+### Manual steps remaining
+
+Tell me exactly what I must do in Replit to:
+
+1. create the assistant,
+2. save its ID,
+3. start FastAPI,
+4. trigger my own phone call,
+5. check status.
+
+### Known issues
+
+List any.
+
+### Scope confirmation
+
+Explicitly confirm that PostgreSQL, VMR, memory, scheduler, frontend, and caregiver UI were NOT implemented.
+
+Then STOP.
+
+Do not begin P0-B or any other DAWA feature.
