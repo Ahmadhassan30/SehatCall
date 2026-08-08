@@ -1,98 +1,131 @@
 <div align="center">
-  <img src="assets/brand/sehatcall-telephone.png" alt="SehatCall antique telephone" width="300" />
+  <img src="assets/brand/sehatcall-telephone.png" alt="SehatCall antique telephone" width="340" />
+  <h1 align="center"><strong>SEHATCALL</strong></h1>
+  <p align="center"><strong>VOICE AI FOR MEDICATION CARE</strong></p>
+  <p align="center">Caregiver managed. Urdu first. Delivered as a phone call.</p>
 
-  <h1><strong>SEHATCALL</strong></h1>
+  [![Voice AI](https://img.shields.io/badge/VOICE_AI-REALTIME_URDU-7A1F2B?style=for-the-badge)](#voice-ai-grounded-in-verified-care)
+  [![Expo](https://img.shields.io/badge/EXPO-54-111111?style=for-the-badge&logo=expo&logoColor=white)](https://expo.dev/)
+  [![FastAPI](https://img.shields.io/badge/FASTAPI-0.115-087E6B?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+  [![Urdu](https://img.shields.io/badge/LANGUAGE-URDU-146B4A?style=for-the-badge)](#the-mobile-experience)
 
-  <h3>CARE THAT CALLS.</h3>
-
-  <strong>A bilingual mobile caregiving app that turns medication schedules into clear Urdu phone calls for the people who need them.</strong>
-
-  [![Expo](https://img.shields.io/badge/Expo-54-111111?style=for-the-badge&logo=expo&logoColor=white)](https://expo.dev/)
-  [![React Native](https://img.shields.io/badge/React_Native-0.81-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://reactnative.dev/)
-  [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-  [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-
-  [Product](#care-from-an-app-reassurance-through-a-call) · [Experience](#the-mobile-experience) · [Safety](#safety-is-the-product) · [Architecture](#architecture) · [Run locally](#run-locally)
+  **[The idea](#the-caregiver-gets-an-app-the-patient-gets-a-call)** &nbsp; | &nbsp;
+  **[Voice AI](#voice-ai-grounded-in-verified-care)** &nbsp; | &nbsp;
+  **[Safety](#intelligence-with-boundaries)** &nbsp; | &nbsp;
+  **[Architecture](#architecture)** &nbsp; | &nbsp;
+  **[Run locally](#run-locally)**
 </div>
 
 ---
 
-> Medication support should not depend on reading a label, owning a smartphone, or learning another interface.
+## The Caregiver Gets an App. The Patient Gets a Call.
 
-## Care From an App. Reassurance Through a Call.
+**SehatCall is a bilingual mobile caregiving platform that transforms medication schedules into thoughtful, real-time Urdu voice conversations.**
 
-SehatCall is designed for a simple but often overlooked reality: the caregiver may use an app, while the patient may be better served by a phone call.
+A caregiver handles the digital work from a focused Expo app: verifying the patient, organising medicines, defining schedules, recording visual recognition cues, selecting a voice, and reviewing outcomes. When a dose is due, SehatCall reaches the patient through the most familiar interface possible: their phone ringing.
 
-From one calm, bilingual mobile experience, a caregiver can verify a patient once, organise medicines, set reminder schedules, add familiar recognition cues, choose a voice, and review what happened. At dose time, SehatCall calls the patient's ordinary phone and speaks in short, careful Urdu turns.
+The patient does not need a smartphone. They do not need mobile data, an account, or the ability to read a medicine label. They answer a normal call and speak naturally.
 
-The patient needs no account, no mobile data, no app, and no new digital habit.
+> This is not an alarm with a voice attached. It is an AI medication companion built around verified care, accessible conversation, and clear clinical boundaries.
 
-| For the caregiver | For the patient |
+## One Product. Two Experiences.
+
+| Caregiver experience | Patient experience |
 | --- | --- |
-| A focused English and Urdu mobile workspace | A familiar call on an ordinary phone |
-| Medicine schedules and recognition details | Clear, concise Urdu conversation |
-| One time phone verification | No login, reading, or navigation |
-| Call history and explicit adherence outcomes | A voice that stays within verified facts |
+| Bilingual English and Urdu mobile app | A familiar call on an ordinary phone |
+| Medicine schedules and recognition cues | Short, natural Urdu conversation |
+| One-time phone ownership verification | No login, app, reading, or navigation |
+| Voice selection with authenticated previews | A consistent, caregiver-selected voice |
+| Call history and explicit adherence outcomes | Answers grounded only in verified facts |
+
+## Voice AI, Grounded in Verified Care
+
+SehatCall combines real-time speech technology with a deliberately constrained intelligence layer. The goal is not to make an AI sound medically impressive. The goal is to make every answer useful, human, and safe.
+
+### The voice pipeline
+
+```text
+Patient speaks in Urdu
+        |
+        v
+Groq Whisper speech recognition
+        |
+        v
+Safety-constrained conversational model
+        |
+        v
+Uplift AI Urdu voice synthesis
+        |
+        v
+Patient hears one short, contextual response
+```
+
+### What makes the intelligence different
+
+| Capability | SehatCall approach |
+| --- | --- |
+| **Real-time Urdu Voice AI** | Understands spoken Urdu and replies in brief, natural turns over a normal phone call. |
+| **Verified Call Context** | Every call receives a compact set of caregiver-confirmed medicine, schedule, cue, and doctor facts. |
+| **Deterministic VMR** | Medication identity is resolved through deterministic rules rather than an LLM guess. |
+| **Closed-world reasoning** | If a fact is absent from the verified context, the assistant says it does not know and refers back to the caregiver. |
+| **Conversation continuity** | The assistant follows the patient's current question without restarting the reminder or repeating itself. |
+| **Voice choice** | Caregivers can preview and select the Urdu voice their patient will hear. |
 
 ## The Mobile Experience
 
-SehatCall treats the caregiver app as the centre of the product, not a remote control for a demo.
+The SehatCall app is the operational centre of care, not a thin controller for an AI demo.
 
-- **Bilingual by design.** English and Urdu are first class experiences, including right to left layouts and persistent language choice.
-- **Fast daily decisions.** The home view prioritises the next call, active schedules, patient status, and recent outcomes.
-- **One time onboarding.** Once a patient's number is verified, returning caregivers move directly into the working app.
-- **Recognisable medicine details.** Caregivers can record package colour, stripe, shape, and storage location to support safer identification.
-- **A voice with context.** Authenticated previews make voice selection deliberate before a reminder is sent.
-- **Honest outcomes.** Call completion and medicine adherence remain separate, visible facts.
+**Onboard once**
+
+Sign in with Google, add the patient, verify their phone through a spoken code, and move directly into the working app on every return.
+
+**Describe medicine the way people recognise it**
+
+Store the nickname, package colour, stripe, tablet shape, storage location, routine anchor, schedule, dose, and verified doctor instructions.
+
+**Know what happens next**
+
+The home experience surfaces the next call, active medicines, verification state, and recent outcomes without burying daily decisions in settings.
+
+**Hear the experience before the patient does**
+
+Authenticated voice previews let the caregiver choose a suitable reminder voice before a call is placed.
 
 ```text
-Sign in
-   -> verify the patient once
-   -> add medicine and recognition cues
-   -> choose a schedule and voice
-   -> SehatCall places the reminder call
-   -> review the call and explicit patient response
+SIGN IN
+   -> VERIFY ONCE
+   -> ADD MEDICINE CONTEXT
+   -> CHOOSE SCHEDULE AND VOICE
+   -> SEHATCALL PLACES THE CALL
+   -> REVIEW CALL AND ADHERENCE SEPARATELY
 ```
 
-## Why It Matters
+## Intelligence With Boundaries
 
-Most medication products assume the person taking the medicine can read, navigate a smartphone, and confidently identify a tablet. SehatCall shifts the complex work to the caregiver while meeting the patient through a technology they already understand: a call.
+The safest AI is not the one that answers everything. It is the one that knows exactly where its authority ends.
 
-That makes the product useful beyond reminders. It creates a bridge between digital caregiving and everyday accessibility without pretending that a completed phone call is proof of adherence.
-
-## Safety Is the Product
-
-SehatCall is a reminder and support system. It does not diagnose, prescribe, alter a dose, recommend an extra dose, or replace a clinician.
-
-| Invariant | Product behaviour |
+| Invariant | Guaranteed behaviour |
 | --- | --- |
 | **Completed is not taken** | A completed call never becomes adherence unless the patient explicitly confirms it. |
-| **Closed world facts** | Voice V2 may use only verified medicine, schedule, and recognition data. |
-| **Deterministic VMR** | Medicine resolution follows deterministic rules, not an LLM identity guess. |
-| **No duplicate dose advice** | If the patient is unsure whether a dose was taken, SehatCall never recommends another. |
-| **Fail closed access** | Caregiver endpoints reject missing or invalid authentication. |
-| **Private ownership** | Every patient record remains scoped to its authenticated caregiver. |
+| **No invented medicine facts** | The voice assistant cannot improvise dosage, appearance, purpose, side effects, or instructions. |
+| **No duplicate-dose advice** | If the patient is unsure whether a dose was taken, SehatCall never recommends another. |
+| **No clinical overreach** | SehatCall does not diagnose, prescribe, alter doses, or replace a clinician. |
+| **Fail-closed authentication** | Caregiver data routes reject missing or invalid sessions. |
+| **Private ownership** | Every patient and medicine record is scoped to the authenticated caregiver. |
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A[SehatCall Expo app] -->|Better Auth session| B[TypeScript API server<br/>Port 8080]
-    B -->|Trusted caregiver identity| C[FastAPI backend<br/>Port 8000]
-    B --> D[(Better Auth<br/>data/auth.db)]
-    C --> E[(Domain data<br/>data/calls.db)]
+    A[SehatCall mobile app] -->|Better Auth session| B[TypeScript gateway<br/>Port 8080]
+    B -->|Trusted caregiver identity| C[FastAPI domain service<br/>Port 8000]
+    B --> D[(Auth SQLite<br/>data/auth.db)]
+    C --> E[(Care SQLite<br/>data/calls.db)]
     C --> F[Deterministic VMR]
     C --> G[APScheduler]
-    C --> H[Uplift AI Voice V2]
-    H --> I[Patient phone]
-```
-
-```text
-Mobile app
-  -> TypeScript gateway validates Better Auth
-  -> gateway injects trusted caregiver identity
-  -> FastAPI applies owner scoped domain rules
-  -> SQLite stores local auth and domain state separately
+    C --> H[Verified Call Context]
+    H --> I[Uplift Voice AI V2]
+    I --> J[Patient phone]
 ```
 
 The mobile app never receives Uplift credentials, Google secrets, Better Auth secrets, internal API secrets, or an unmasked patient phone number.
@@ -101,22 +134,23 @@ The mobile app never receives Uplift credentials, Google secrets, Better Auth se
 
 | Layer | Technology |
 | --- | --- |
-| Mobile app | Expo 54, React Native, Expo Router, TypeScript |
-| Languages | English and Urdu with right to left support |
+| Mobile product | Expo 54, React Native, Expo Router, TypeScript |
+| Language experience | English and Urdu with right-to-left support |
 | Authentication | Better Auth, Google OAuth, native cookie bridge |
 | API gateway | Express 5, TypeScript, Pino |
 | Domain backend | FastAPI, Pydantic, APScheduler, HTTPX |
-| Voice | Uplift AI Voice V2 with an Urdu conversation flow |
-| Storage | SQLite with separate auth and domain databases |
-| Tooling | pnpm, uv, pytest, Vitest |
+| Voice intelligence | Groq Whisper STT, safety-constrained LLM, Uplift AI TTS |
+| Medication resolution | Deterministic Verified Medication Resolution |
+| Persistence | SQLite with isolated auth and care databases |
+| Verification | pytest, Vitest, TypeScript, Expo export |
 
 ## Repository
 
 ```text
-backend/                 FastAPI domain backend and safety tests
-artifacts/api-server/    Authenticated TypeScript gateway and Better Auth
+backend/                 FastAPI domain backend, Voice AI, VMR, scheduling
+artifacts/api-server/    Better Auth and authenticated TypeScript gateway
 artifacts/caregiver-app/ Bilingual SehatCall mobile application
-assets/brand/            Product artwork used by this README
+assets/brand/            SehatCall visual assets
 lib/                     Shared TypeScript libraries
 scripts/local/           Local development launch scripts
 data/                    Runtime SQLite state, ignored by Git
@@ -136,8 +170,8 @@ data/                    Runtime SQLite state, ignored by Git
 ### Install
 
 ```bash
-git clone <your-repository-url>
-cd Dawa
+git clone https://github.com/Ahmadhassan30/SehatCall.git
+cd SehatCall
 
 uv sync --locked --python 3.13
 pnpm install --frozen-lockfile
@@ -147,32 +181,25 @@ Python dependencies are defined by `pyproject.toml` and `uv.lock`. `backend/requ
 
 ### Configure
 
-Create server configuration from the example without committing secrets:
-
 ```bash
 cp .env.example .env.local
-```
-
-Create the Expo public configuration:
-
-```bash
 printf 'EXPO_PUBLIC_API_BASE_URL=http://localhost:8080\n' > artifacts/caregiver-app/.env.local
 ```
 
-Only public `EXPO_PUBLIC_*` values belong in the Expo environment file.
+Only public `EXPO_PUBLIC_*` values belong in the Expo environment file. Runtime secrets remain server-side and are never committed.
 
 ## Run Locally
 
-Open one terminal for each service.
+Open one terminal for each service:
 
 ```bash
-# Terminal 1: FastAPI on port 8000
+# Terminal 1: FastAPI domain and Voice AI service
 scripts/local/backend.sh
 
-# Terminal 2: TypeScript API and Better Auth on port 8080
+# Terminal 2: TypeScript gateway and Better Auth
 scripts/local/api-server.sh
 
-# Terminal 3: Expo
+# Terminal 3: Expo mobile app
 scripts/local/expo.sh
 ```
 
@@ -184,7 +211,7 @@ scripts/local/expo.sh
 
 ### Physical Phone and Google OAuth
 
-Expose only the TypeScript gateway:
+Expose only the authenticated TypeScript gateway:
 
 ```bash
 cloudflared tunnel --url http://localhost:8080
@@ -201,7 +228,7 @@ https://YOUR_PUBLIC_ORIGIN/api/auth/callback/google
 Restart the API server and Expo after changing the public origin.
 
 <details>
-<summary><strong>Create a SehatCall Voice V2 assistant</strong></summary>
+<summary><strong>Create the SehatCall Voice AI assistant</strong></summary>
 
 Configure `UPLIFTAI_API_KEY`, then run:
 
@@ -214,12 +241,12 @@ cd backend
 uv run --project .. python scripts/create_uplift_assistant.py
 ```
 
-This command creates and verifies the assistant configuration. It does not place a phone call. Add the returned identifier to `.env.local` as `UPLIFT_ASSISTANT_ID`, then restart FastAPI.
+This creates and validates the persistent Voice V2 assistant configuration. It does not place a phone call. Add the returned identifier to `.env.local` as `UPLIFT_ASSISTANT_ID`, then restart FastAPI.
 
 </details>
 
 <details>
-<summary><strong>Health checks</strong></summary>
+<summary><strong>Verify local health</strong></summary>
 
 ```bash
 curl http://localhost:8000/health
@@ -227,7 +254,7 @@ curl http://localhost:8080/api/auth/ok
 curl -i http://localhost:8080/api/dawa/patient
 ```
 
-The `/api/dawa` namespace is intentionally retained as a stable internal API contract during the SehatCall product rebrand.
+The `/api/dawa` namespace remains a stable internal API contract during the SehatCall product rebrand.
 
 ```text
 FastAPI health                200 OK
@@ -235,18 +262,16 @@ API auth health               200 OK
 Unauthenticated patient data  401 Unauthorized
 ```
 
-If caregiver data returns `200` without a session, stop and fix authentication before continuing.
-
 </details>
 
-## Tests
+## Verification
 
 ```bash
-# FastAPI
+# FastAPI safety and domain suite
 cd backend
 uv run --project .. python -m pytest -q
 
-# Return to the repository root
+# TypeScript and gateway verification
 cd ..
 pnpm --filter @workspace/api-server run test
 pnpm run typecheck:libs
@@ -254,7 +279,7 @@ pnpm --filter @workspace/api-server run typecheck
 pnpm --filter @workspace/caregiver-app run typecheck
 ```
 
-Automated tests must never place a Uplift phone call, mutate a real assistant, perform Google OAuth, or contact a real phone number.
+Automated tests never place Uplift phone calls, mutate a real assistant, perform Google OAuth, or contact a real phone number.
 
 ## Runtime Data
 
@@ -267,17 +292,17 @@ Runtime databases and environment files are ignored and must never be committed.
 
 ## Real Call Guardrail
 
-A real SehatCall phone call requires explicit operator authorization:
+A real SehatCall call requires explicit operator authorization:
 
 ```text
 AUTHORIZE REAL TEST CALL
 ```
 
-Without that authorization, validation stays limited to health checks, authenticated UI flows, and mocked test suites.
+Without that authorization, validation remains limited to health checks, authenticated UI flows, and mocked test suites.
 
 ---
 
 <div align="center">
-  <strong>SehatCall</strong><br/>
-  Thoughtful mobile caregiving for patients polished health technology too often leaves behind.
+  <strong>SEHATCALL</strong><br/>
+  Voice AI that turns a medication schedule into a moment of human connection.
 </div>
