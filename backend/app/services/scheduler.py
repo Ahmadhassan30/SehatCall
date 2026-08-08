@@ -475,7 +475,7 @@ async def _refresh_call_status_from_uplift(event: dict) -> None:
             return
         data = resp.json()
         sessions = data if isinstance(data, list) else data.get("sessions", [])
-        session = next((s for s in sessions if s.get("callId") == call_id or s.get("id") == call_id), None)
+        session = _find_session_for_call(sessions, call_id)
         if not session:
             return
 
@@ -517,10 +517,7 @@ async def _check_call_status_and_maybe_retry(
             if resp.is_success:
                 data = resp.json()
                 sessions = data if isinstance(data, list) else data.get("sessions", [])
-                session = next(
-                    (s for s in sessions if s.get("callId") == call_id or s.get("id") == call_id),
-                    None,
-                )
+                session = _find_session_for_call(sessions, call_id)
                 if session:
                     failure_reason = (
                         session.get("failureReason") or session.get("failure_reason")
@@ -574,24 +571,57 @@ def _make_schedule_key(patient_id: str, medication_id: str, date_str: str, hhmm:
     return f"{patient_id}:{medication_id}:{date_str}:{hhmm}"
 
 
+_VALID_CALL_STATUSES = {"completed", "failed", "answered", "ringing", "dialing", "dispatched"}
+
+
 def _derive_call_status(session: dict) -> str | None:
-    """Map Uplift session flags to a DAWA call_status string."""
-    if session.get("failed"):
-        return "failed"
-    if session.get("completed"):
-        return "completed"
-    if session.get("answered"):
+    """
+    Map a real Uplift session object to a DAWA call_status string.
+
+    Uses `state` as the authoritative field (real Uplift API schema).
+    Falls back to timestamp inference only when `state` is absent.
+    """
+    # Primary: use the real Uplift `state` field
+    state = (session.get("state") or "").lower()
+    if state in _VALID_CALL_STATUSES:
+        return state
+    # Secondary: timestamp-based inference for sessions missing `state`
+    if session.get("answeredAt"):
         return "answered"
-    if session.get("ringing"):
+    if session.get("ringingAt"):
         return "ringing"
-    if session.get("dialing"):
-        return "dialing"
-    if session.get("dispatched"):
-        return "dispatched"
-    status = (session.get("status") or "").lower()
-    if status in {"completed", "failed", "answered", "ringing", "dialing", "dispatched"}:
-        return status
     return None
+
+
+def _find_session_for_call(sessions: list[dict], call_id: str) -> dict | None:
+    """
+    Correlate a stored call_id to a session in the Uplift sessions list.
+
+    Uplift POST /calls may return callId, id, or sessionId — any of which
+    might be stored as the dose event's callId.  GET sessions returns
+    sessionId (and sometimes callId).
+
+    Strategy:
+    1. Exact match — call_id matches sessionId, callId, or id.
+    2. Most-recent outbound telephony session — safe because DAWA's
+       concurrency guard ensures at most one active call at a time.
+    """
+    # Restrict to outbound telephony where possible
+    outbound = [
+        s for s in sessions
+        if s.get("channel") == "telephony" and s.get("direction") == "outbound"
+    ] or sessions  # fall back to all if filter yields nothing
+
+    # 1. Exact match
+    for s in outbound:
+        if call_id in (s.get("sessionId"), s.get("callId"), s.get("id")):
+            return s
+
+    # 2. Most recent by createdAt (single-active-call guarantee)
+    try:
+        return max(outbound, key=lambda s: s.get("createdAt") or "")
+    except (ValueError, TypeError):
+        return None
 
 
 def _mask_call_id(call_id: str) -> str:

@@ -194,9 +194,13 @@ async def call_status(limit: int = 10) -> dict:
     """
     dose_events = dawa_store.get_recent_dose_events(patient_id="razia-bibi", limit=limit)
 
-    live_sessions: dict[str, dict] = {}
+    # Normalised sessions keyed by every available identifier so we can
+    # correlate even when callId != sessionId.
+    norm_sessions: list[dict] = []
+    live_sessions: dict[str, dict] = {}   # key → normalised session
     if settings.uplift_assistant_id:
         try:
+            from app.services.uplift import _normalise_session  # noqa: PLC0415
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
                     f"{UPLIFT_BASE_URL}/realtime-assistants/{settings.uplift_assistant_id}/sessions",
@@ -205,34 +209,38 @@ async def call_status(limit: int = 10) -> dict:
                 )
             if resp.is_success:
                 data = resp.json()
-                sessions: list[dict] = data if isinstance(data, list) else data.get("sessions", [])
-                for s in sessions:
-                    cid = s.get("callId") or s.get("id")
-                    if cid:
-                        live_sessions[cid] = s
+                raw_sessions: list[dict] = (
+                    data if isinstance(data, list) else data.get("sessions", [])
+                )
+                for s in raw_sessions:
+                    ns = _normalise_session(s)
+                    norm_sessions.append(ns)
+                    # Index by every identifier present
+                    if ns.get("sessionId"):
+                        live_sessions[ns["sessionId"]] = ns
+                    if s.get("callId"):
+                        live_sessions[s["callId"]] = ns
+                    if s.get("id"):
+                        live_sessions[s["id"]] = ns
         except Exception as exc:
             logger.warning("UPLIFT_STATUS_FETCH_FAILED: %s", exc)
+
+    # Most-recent outbound telephony session for single-active-call fallback
+    _outbound_norm = [
+        ns for ns in norm_sessions
+    ]  # all are outbound telephony in DAWA's single-patient demo
 
     enriched: list[dict] = []
     for event in dose_events:
         call_id = event.get("callId")
         merged = dict(event)
-        if call_id and call_id in live_sessions:
-            s = live_sessions[call_id]
-            merged["liveStatus"] = {
-                "status":        s.get("status"),
-                "dispatched":    s.get("dispatched"),
-                "dialing":       s.get("dialing"),
-                "ringing":       s.get("ringing"),
-                "answered":      s.get("answered"),
-                "completed":     s.get("completed"),
-                "failed":        s.get("failed"),
-                "failureReason": s.get("failureReason"),
-                "startedAt":     s.get("startedAt") or s.get("createdAt"),
-                "endedAt":       s.get("endedAt"),
-            }
-        else:
-            merged["liveStatus"] = None
+
+        ns = live_sessions.get(call_id) if call_id else None
+        if ns is None and _outbound_norm:
+            # Fallback: most-recent session — safe because DAWA enforces one active call
+            ns = max(_outbound_norm, key=lambda x: x.get("startedAt") or "")
+
+        merged["liveStatus"] = ns   # already normalised (or None)
         enriched.append(merged)
 
     return {

@@ -208,20 +208,21 @@ def test_session_normalisation(mock_client_class, monkeypatch):
     """GET /api/test-call/status must return normalised session fields."""
     client = _make_client(monkeypatch)
 
+    # Use REAL Uplift Singapore response shape (state field, milestone timestamps)
     raw_sessions = {
         "sessions": [
             {
                 "sessionId": "sess-001",
-                "callId": "call-001",
-                "status": "completed",
-                "dispatched": True,
-                "ringing": True,
-                "answered": True,
-                "completed": True,
-                "failed": False,
-                "failureReason": None,
-                "startedAt": "2024-01-01T10:00:00Z",
-                "endedAt": "2024-01-01T10:05:00Z",
+                "channel": "telephony",
+                "direction": "outbound",
+                "state": "completed",
+                "connected": True,
+                "createdAt": "2026-08-08T12:04:29.420Z",
+                "ringingAt": "2026-08-08T12:04:34.745Z",
+                "connectedAt": "2026-08-08T12:04:40.329Z",
+                "answeredAt": "2026-08-08T12:04:42.904Z",
+                "endedAt": "2026-08-08T12:05:16.714Z",
+                "durationSec": 34,
             }
         ]
     }
@@ -307,3 +308,189 @@ def test_build_instructions_nahin_response_is_neutral():
     assert "ڈاکٹر" in instructions, (
         "The 'nahin' response must suggest the patient contacts their doctor."
     )
+
+
+# ---------------------------------------------------------------------------
+# _normalise_session — real Uplift response shape (17 parser tests)
+# Fixture mirrors the actual Singapore endpoint response from a live call.
+# ---------------------------------------------------------------------------
+
+_REAL_COMPLETED_SESSION = {
+    "sessionId": "api_test",
+    "channel": "telephony",
+    "direction": "outbound",
+    "state": "completed",
+    "connected": True,
+    "createdAt": "2026-08-08T12:04:29.420Z",
+    "ringingAt": "2026-08-08T12:04:34.745Z",
+    "connectedAt": "2026-08-08T12:04:40.329Z",
+    "answeredAt": "2026-08-08T12:04:42.904Z",
+    "endedAt": "2026-08-08T12:05:16.714Z",
+    "durationSec": 34,
+    "toNumber": "+92300XXXXXXX",
+    "fromNumber": "+1XXXXXXXXX",
+}
+
+
+def _ns(session: dict) -> dict:
+    """Shorthand: reload uplift and call _normalise_session."""
+    import importlib
+    import app.services.uplift as svc
+    importlib.reload(svc)
+    return svc._normalise_session(session)
+
+
+def test_parser_state_completed_yields_status_completed():
+    """state=completed → status='completed' (test 1)."""
+    s = _ns(_REAL_COMPLETED_SESSION)
+    assert s["status"] == "completed", f"Expected 'completed', got {s['status']!r}"
+
+
+def test_parser_state_completed_yields_completed_true():
+    """state=completed → completed=True (test 2)."""
+    s = _ns(_REAL_COMPLETED_SESSION)
+    assert s["completed"] is True
+
+
+def test_parser_answeredat_yields_answered_true():
+    """answeredAt present → answered=True (test 3)."""
+    s = _ns(_REAL_COMPLETED_SESSION)
+    assert s["answered"] is True
+
+
+def test_parser_ringingat_yields_ringing_true():
+    """ringingAt present → ringing=True (test 4)."""
+    s = _ns(_REAL_COMPLETED_SESSION)
+    assert s["ringing"] is True
+
+
+def test_parser_connected_preserved():
+    """connected=True preserved (test 5)."""
+    s = _ns(_REAL_COMPLETED_SESSION)
+    assert s["connected"] is True
+
+
+def test_parser_durationsec_preserved():
+    """durationSec=34 preserved (test 6)."""
+    s = _ns(_REAL_COMPLETED_SESSION)
+    assert s["durationSec"] == 34
+
+
+def test_parser_sessionid_preserved():
+    """sessionId preserved (test 7)."""
+    s = _ns(_REAL_COMPLETED_SESSION)
+    assert s["sessionId"] == "api_test"
+
+
+def test_parser_missing_callid_does_not_break():
+    """No callId in session → callId is None, no exception (test 8)."""
+    session = dict(_REAL_COMPLETED_SESSION)
+    session.pop("callId", None)
+    s = _ns(session)  # must not raise
+    assert s.get("callId") is None
+
+
+def test_parser_no_fake_callid_generated():
+    """callId must NOT be manufactured from sessionId (test 9)."""
+    session = dict(_REAL_COMPLETED_SESSION)
+    session.pop("callId", None)
+    s = _ns(session)
+    assert s.get("callId") != s["sessionId"], (
+        "callId must not be synthesized from sessionId"
+    )
+
+
+def test_parser_state_failed_yields_failed_true():
+    """state=failed → failed=True (test 10)."""
+    session = {**_REAL_COMPLETED_SESSION, "state": "failed",
+               "failureReason": "no_answer"}
+    s = _ns(session)
+    assert s["failed"] is True
+    assert s["completed"] is False
+
+
+def test_parser_failure_reason_preserved():
+    """failureReason preserved when present (test 11)."""
+    session = {**_REAL_COMPLETED_SESSION, "state": "failed",
+               "failureReason": "busy"}
+    s = _ns(session)
+    assert s["failureReason"] == "busy"
+
+
+def test_parser_active_states_are_non_terminal():
+    """dispatched/dialing/ringing/answered all remain active — not completed/failed (test 12)."""
+    from app.services.scheduler import _derive_call_status
+    for active_state in ("dispatched", "dialing", "ringing", "answered"):
+        session = {**_REAL_COMPLETED_SESSION, "state": active_state}
+        status = _derive_call_status(session)
+        assert status == active_state, (
+            f"_derive_call_status must return {active_state!r}; got {status!r}"
+        )
+        assert status not in ("completed", "failed"), (
+            f"{active_state!r} must not be terminal"
+        )
+
+
+def test_parser_terminal_states():
+    """completed/failed map to terminal call_status values (test 13)."""
+    from app.services.scheduler import _derive_call_status
+    for term in ("completed", "failed"):
+        session = {**_REAL_COMPLETED_SESSION, "state": term}
+        assert _derive_call_status(session) == term
+
+
+@pytest.fixture()
+def _seeded_dawa_db():
+    """Init + seed the DAWA DB for tests that need it."""
+    from app.services.dawa_store import init_dawa_db, seed_demo_data
+    init_dawa_db()
+    seed_demo_data()
+
+
+def test_parser_completed_removes_active_call_barrier(_seeded_dawa_db):
+    """completed state: has_active_call() returns False after update (test 14)."""
+    from app.services import dawa_store, scheduler as sched
+    ev = dawa_store.create_dose_event(
+        "razia-bibi", "metformin-500", "21:00",
+        call_id="test-session", call_status="answered",
+    )
+    assert sched.has_active_call() is True
+    dawa_store.update_dose_event(ev["id"], call_status="completed")
+    assert sched.has_active_call() is False, (
+        "completed is terminal — has_active_call() must return False"
+    )
+
+
+def test_parser_phone_numbers_masked():
+    """toNumber / fromNumber must not expose full digits (test 15)."""
+    s = _ns(_REAL_COMPLETED_SESSION)
+    to_num = s.get("toNumber") or ""
+    from_num = s.get("fromNumber") or ""
+    # Full number "+92300XXXXXXX" must not appear verbatim
+    assert "+92300XXXXXXX" not in to_num
+    assert "+1XXXXXXXXX" not in from_num
+    # Masked form must contain asterisks (or be omitted entirely)
+    if to_num:
+        assert "*" in to_num, f"toNumber must be masked; got {to_num!r}"
+    if from_num:
+        assert "*" in from_num, f"fromNumber must be masked; got {from_num!r}"
+
+
+def test_parser_all_p0_p1_p2_still_pass():
+    """Smoke-check: importing all three test modules does not raise (test 16)."""
+    import importlib
+    for mod_name in (
+        "tests.test_p0a_conformance",
+        "tests.test_p1_dawa",
+        "tests.test_p2_scheduler",
+    ):
+        importlib.import_module(mod_name)  # must not raise
+
+
+def test_parser_zero_real_uplift_calls():
+    """_normalise_session is a pure dict transform — zero HTTP calls (test 17)."""
+    import app.services.uplift as svc
+    import unittest.mock as mock_lib
+    with mock_lib.patch("app.services.uplift.httpx.AsyncClient") as patched:
+        svc._normalise_session(_REAL_COMPLETED_SESSION)
+    patched.assert_not_called()

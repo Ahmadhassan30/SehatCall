@@ -213,20 +213,55 @@ async def get_call_status(limit: int = 10) -> list[dict[str, Any]]:
 
 
 def _normalise_session(session: dict[str, Any]) -> dict[str, Any]:
-    """Extract the fields relevant to P0-A status inspection."""
+    """
+    Normalise a raw Uplift session object to the canonical DAWA shape.
+
+    Authoritative real Uplift response fields (Singapore endpoint):
+      state        — lifecycle string: dispatched|dialing|ringing|answered|completed|failed
+      sessionId    — session identifier
+      ringingAt    — ISO timestamp when ringing started (null if not yet reached)
+      connectedAt  — ISO timestamp when connected
+      answeredAt   — ISO timestamp when patient answered
+      endedAt      — ISO timestamp when call ended
+      createdAt    — ISO timestamp when session was created
+      connected    — bool
+      durationSec  — integer seconds (present after end)
+      toNumber     — destination phone (masked before returning)
+      fromNumber   — caller ID (masked before returning)
+
+    Boolean lifecycle flags are derived from `state` (primary) plus
+    timestamp presence as a fallback for milestone booleans:
+      ringing  = state=="ringing"  OR ringingAt is present
+      answered = state=="answered" OR answeredAt is present
+
+    callId is included only if it genuinely exists in the response;
+    it is NOT manufactured from sessionId.
+    """
+    state = session.get("state") or ""
+
+    # Mask phone numbers — full numbers must never leave the backend
+    to_raw = session.get("toNumber") or ""
+    from_raw = session.get("fromNumber") or ""
+
     return {
-        "sessionId": session.get("sessionId") or session.get("id"),
-        "callId": session.get("callId"),
-        "status": session.get("status"),
-        "dispatched": session.get("dispatched"),
-        "dialing": session.get("dialing"),
-        "ringing": session.get("ringing"),
-        "answered": session.get("answered"),
-        "completed": session.get("completed"),
-        "failed": session.get("failed"),
+        "sessionId":     session.get("sessionId") or session.get("id"),
+        "callId":        session.get("callId") or None,   # only if genuinely present
+        "status":        state,
+        "dispatched":    state == "dispatched",
+        "dialing":       state == "dialing",
+        "ringing":       state == "ringing" or bool(session.get("ringingAt")),
+        "answered":      state == "answered" or bool(session.get("answeredAt")),
+        "completed":     state == "completed",
+        "failed":        state == "failed",
         "failureReason": session.get("failureReason"),
-        "startedAt": session.get("startedAt") or session.get("createdAt"),
-        "endedAt": session.get("endedAt"),
+        "connected":     session.get("connected"),
+        "startedAt":     session.get("createdAt"),
+        "ringingAt":     session.get("ringingAt"),
+        "answeredAt":    session.get("answeredAt"),
+        "endedAt":       session.get("endedAt"),
+        "durationSec":   session.get("durationSec"),
+        "toNumber":      _mask_phone(to_raw) if to_raw else None,
+        "fromNumber":    _mask_phone(from_raw) if from_raw else None,
     }
 
 

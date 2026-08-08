@@ -1,0 +1,332 @@
+# URGENT REAL-UPLIFT SESSION PARSER FIX
+
+DO NOT add features.
+DO NOT change VMR.
+DO NOT change scheduler architecture.
+DO NOT change frontend design.
+DO NOT place a real phone call.
+DO NOT recreate the assistant.
+
+We now have the ACTUAL response returned by the real Uplift Singapore
+sessions endpoint after a successful Pakistani outbound phone call.
+
+The current backend normalization is wrong.
+
+==================================================
+ACTUAL REAL RESPONSE SHAPE
+==================================================
+
+Sanitized real response:
+
+{
+  "sessions": [
+    {
+      "sessionId": "api_...",
+      "realtimeAssistantId": "...",
+      "channel": "telephony",
+      "direction": "outbound",
+      "state": "completed",
+      "connected": true,
+      "toNumber": "+92...",
+      "fromNumber": "...",
+      "participantIdentity": "...",
+      "transportProvider": "nayatel",
+      "createdAt": "2026-08-08T12:04:29.420Z",
+      "ringingAt": "2026-08-08T12:04:34.745Z",
+      "connectedAt": "2026-08-08T12:04:40.329Z",
+      "answeredAt": "2026-08-08T12:04:42.904Z",
+      "endedAt": "2026-08-08T12:05:16.714Z",
+      "durationSec": 34
+    }
+  ]
+}
+
+The real session object does NOT contain:
+
+status
+ringing
+answered
+completed
+callId
+
+as standalone fields.
+
+Instead the authoritative lifecycle field is:
+
+state
+
+and milestone timestamps are:
+
+ringingAt
+connectedAt
+answeredAt
+endedAt
+
+==================================================
+ROOT CAUSE
+==================================================
+
+Audit:
+
+backend/app/services/uplift.py
+
+and all P1/P2 call-status code.
+
+The existing normalizer appears to be reading keys that are not present in
+the real Uplift response, producing:
+
+{
+  "callId": null,
+  "status": null,
+  "ringing": null,
+  "answered": null,
+  "completed": null,
+  ...
+}
+
+Fix the parser against the REAL response above.
+
+==================================================
+REQUIRED NORMALIZATION
+==================================================
+
+Normalize each Uplift session approximately as:
+
+{
+  "sessionId": session["sessionId"],
+  "status": session["state"],
+
+  "dispatched": session["state"] == "dispatched",
+
+  "dialing": session["state"] == "dialing",
+
+  "ringing":
+      session["state"] == "ringing"
+      OR session["ringingAt"] is not null,
+
+  "answered":
+      session["state"] == "answered"
+      OR session["answeredAt"] is not null,
+
+  "completed":
+      session["state"] == "completed",
+
+  "failed":
+      session["state"] == "failed",
+
+  "failureReason":
+      session.get("failureReason"),
+
+  "connected":
+      session.get("connected"),
+
+  "startedAt":
+      session.get("createdAt"),
+
+  "ringingAt":
+      session.get("ringingAt"),
+
+  "answeredAt":
+      session.get("answeredAt"),
+
+  "endedAt":
+      session.get("endedAt"),
+
+  "durationSec":
+      session.get("durationSec")
+}
+
+Do not mechanically copy this if the existing response models require a
+slightly different shape, but preserve these semantics.
+
+IMPORTANT:
+
+Do NOT manufacture a callId from sessionId.
+
+If Uplift sessions do not contain callId, return callId only if it genuinely
+exists, otherwise omit it or leave it nullable.
+
+sessionId is the Uplift session identifier and should be preserved.
+
+==================================================
+STATE SEMANTICS
+==================================================
+
+The authoritative terminal test must be:
+
+state in {"completed", "failed"}
+
+The authoritative active/non-terminal test must be:
+
+state in {
+  "dispatched",
+  "dialing",
+  "ringing",
+  "answered"
+}
+
+Do not infer:
+
+completed = endedAt exists
+
+when state explicitly exists.
+
+Use `state` as source of truth.
+
+Timestamps are useful milestone metadata.
+
+==================================================
+IMPORTANT: P2 SCHEDULER IMPACT
+==================================================
+
+Audit the scheduler/status updater because P2 concurrency depends on
+dose_events.call_status eventually moving from an active state to:
+
+completed
+or
+failed
+
+Make sure the REAL Uplift field:
+
+session["state"]
+
+is what ultimately updates:
+
+dose_events.call_status
+
+Otherwise DAWA could permanently think an already-completed call is active.
+
+==================================================
+SESSION ↔ DOSE EVENT CORRELATION
+==================================================
+
+The real sessions response currently does not expose `callId`.
+
+Do NOT assume session.callId exists.
+
+Audit how the scheduler currently associates a session with a dose_event.
+
+Because Uplift only permits one active outbound call in this demo
+architecture, implement the smallest reliable correlation strategy.
+
+Preferred behavior:
+
+- preserve the callId returned by POST /calls in dose_events;
+- preserve sessionId separately if/when discovered;
+- for status polling, consider only:
+    channel == "telephony"
+    direction == "outbound"
+    correct realtimeAssistantId
+- correlate the session to the current active dose event using the existing
+  dispatch time / most-recent active outbound session logic;
+- once associated, persist sessionId if appropriate.
+
+DO NOT falsely equate:
+
+callId == sessionId
+
+unless the actual API proves they are identical.
+
+Do not add a complex queue or new infrastructure.
+
+==================================================
+SECURITY
+==================================================
+
+The real response contains:
+
+toNumber
+fromNumber
+
+Do NOT expose full phone numbers through our public caregiver API.
+
+Either omit them or mask them.
+
+Never log full numbers.
+
+==================================================
+TEST WITH THE REAL SHAPE
+==================================================
+
+Replace/add mocked fixtures using the ACTUAL structure:
+
+{
+  "sessions": [{
+    "sessionId": "api_test",
+    "channel": "telephony",
+    "direction": "outbound",
+    "state": "completed",
+    "connected": true,
+    "createdAt": "2026-08-08T12:04:29.420Z",
+    "ringingAt": "2026-08-08T12:04:34.745Z",
+    "connectedAt": "2026-08-08T12:04:40.329Z",
+    "answeredAt": "2026-08-08T12:04:42.904Z",
+    "endedAt": "2026-08-08T12:05:16.714Z",
+    "durationSec": 34
+  }]
+}
+
+Test:
+
+1. state=completed → status=completed
+2. state=completed → completed=true
+3. answeredAt present → answered=true
+4. ringingAt present → ringing=true
+5. connected=true preserved
+6. durationSec=34 preserved
+7. sessionId preserved
+8. missing callId does not break normalization
+9. no fake callId generated
+10. state=failed → failed=true
+11. failureReason preserved when present
+12. dispatched/dialing/ringing/answered remain active
+13. completed/failed are terminal
+14. completed state removes active-call scheduler barrier
+15. full toNumber/fromNumber are not exposed
+16. all P0/P1/P2 tests still pass
+17. zero real Uplift calls occur during tests
+
+==================================================
+P0 ENDPOINT EXPECTATION AFTER FIX
+==================================================
+
+Our real successful call should normalize roughly to:
+
+{
+  "sessionId": "api_...",
+  "status": "completed",
+  "ringing": true,
+  "answered": true,
+  "completed": true,
+  "failed": false,
+  "failureReason": null,
+  "connected": true,
+  "startedAt": "...",
+  "ringingAt": "...",
+  "answeredAt": "...",
+  "endedAt": "...",
+  "durationSec": 34
+}
+
+==================================================
+STOP CONDITION
+==================================================
+
+Run the full test suite.
+
+DO NOT place a real call.
+
+Then STOP and return:
+
+## Real Uplift Session Parser Fix
+
+### Root cause
+### Actual Uplift schema
+### Files changed
+### Normalized representation
+### Session-to-dose-event correlation
+### Scheduler impact
+### Security / phone masking
+### Tests added
+### Total tests passing
+### Confirmation that zero real calls were placed
