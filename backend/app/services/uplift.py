@@ -1,5 +1,5 @@
 """
-Uplift AI service layer for DAWA P0-A.
+Uplift AI service layer for DAWA P0-B.
 
 All HTTP communication with the Uplift API is centralised here.
 No raw Uplift calls should appear in route handlers.
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -20,6 +21,35 @@ from fastapi import HTTPException
 from app.config import UPLIFT_BASE_URL, settings
 
 logger = logging.getLogger("dawa.uplift")
+
+
+# ---------------------------------------------------------------------------
+# In-memory call log (P0-B — no database yet)
+# ---------------------------------------------------------------------------
+
+# Each entry: {"logId": str, "callId": str, "medication": str, "dispatchedAt": str, "status": str}
+_call_log: list[dict[str, Any]] = []
+
+
+def get_call_log() -> list[dict[str, Any]]:
+    """Return a copy of the in-memory call log, most-recent first."""
+    return list(reversed(_call_log))
+
+
+def _append_call_log(log_id: str, call_id: str, medication: str) -> None:
+    _call_log.append(
+        {
+            "logId": log_id,
+            "callId": call_id,
+            "medication": medication,
+            "dispatchedAt": datetime.now(timezone.utc).isoformat(),
+            "status": "dispatched",
+        }
+    )
+    logger.info(
+        "CALL_LOG_APPENDED",
+        extra={"logId": log_id, "callId": call_id, "medication": medication},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -85,12 +115,52 @@ def _raise_for_uplift_error(response: httpx.Response) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Assistant instructions builder
+# ---------------------------------------------------------------------------
+
+def _build_instructions(medication_name: str) -> str:
+    """
+    Build medication-aware Urdu instructions for the Uplift realtime assistant.
+
+    The assistant will:
+    - Greet the patient warmly in Urdu
+    - Ask specifically whether they took the named medication today
+    - Confirm their response ("haan" = yes / "nahin" = no)
+    - Thank them and end the call
+    - NEVER give medical advice or discuss dosage
+    """
+    return (
+        "آپ DAWA کے ایک مددگار اسسٹنٹ ہیں جو مریضوں کو ادویات یاد دلاتے ہیں۔ "
+        # You are a DAWA assistant that reminds patients about their medicines.
+        "صرف اردو میں بات کریں۔ "
+        # Speak only in Urdu.
+        "پہلے مریض کو سلام کریں اور پوچھیں کہ وہ کیسے ہیں۔ "
+        # First greet the patient and ask how they are.
+        f"پھر پوچھیں: 'کیا آپ نے آج اپنی دوائی {medication_name} لی ہے؟' "
+        # Then ask: 'Did you take your medicine [medication_name] today?'
+        "اگر مریض 'ہاں' کہیں تو خوشی سے تصدیق کریں اور کہیں 'بہت اچھا، شکریہ'۔ "
+        # If patient says 'haan' (yes), confirm warmly: 'Very good, thank you.'
+        "اگر مریض 'نہیں' کہیں تو صرف شکریہ کہیں اور تجویز کریں کہ وہ اپنے ڈاکٹر سے رابطہ کریں۔ "
+        # If patient says 'nahin' (no), only thank them and suggest they contact their doctor — never tell them to take the medicine.
+        "صرف دوائی لینے کی تصدیق کریں — خوراک، ضمنی اثرات یا طبی معلومات پر بالکل بات نہ کریں۔ "
+        # Only confirm adherence — never discuss dose, side effects, or medical information.
+        "گفتگو مختصر اور قدرتی رکھیں۔ "
+        # Keep the conversation brief and natural.
+        "اندرونی تفصیلات ظاہر نہ کریں۔"
+        # Do NOT reveal internal implementation details.
+    )
+
+
+# ---------------------------------------------------------------------------
 # Assistant creation
 # ---------------------------------------------------------------------------
 
-async def create_assistant(name: str = "DAWA P0 Urdu Call Test") -> dict[str, Any]:
+async def create_assistant(
+    name: str = "DAWA Urdu Medication Reminder",
+    medication_name: str = "آپ کی دوائی",  # default: "your medicine"
+) -> dict[str, Any]:
     """
-    Create a new Uplift realtime assistant configured for Urdu outbound calls.
+    Create a new Uplift realtime assistant configured for Urdu outbound medication calls.
 
     This is intended to be called once via the bootstrap script, not on server startup.
 
@@ -115,16 +185,7 @@ async def create_assistant(name: str = "DAWA P0 Urdu Call Test") -> dict[str, An
             "model": "gemini-2.5-flash",
         },
         "initialGreeting": True,
-        # Assistant instructions in Urdu (Nastaliq) + English comments
-        "instructions": (
-            "آپ DAWA کا ایک ٹیسٹ اسسٹنٹ ہیں۔ "  # You are a DAWA test assistant.
-            "براہ کرم پہلے سلام کریں اور پوچھیں کہ کال کرنے والا کیسا ہے۔ "  # Greet first, ask how the caller is.
-            "صرف اردو میں بات کریں۔ "  # Speak only in Urdu.
-            "مختصر اور قدرتی انداز میں بات کریں۔ "  # Speak briefly and naturally.
-            "اپنا تعارف DAWA انٹیگریشن ٹیسٹ اسسٹنٹ کے طور پر کروائیں۔ "  # Introduce as DAWA integration-test assistant.
-            "طبی مشورہ نہ دیں اور ادویات پر بات نہ کریں۔ "  # Do NOT give medical advice or discuss medication.
-            "اندرونی تفصیلات ظاہر نہ کریں۔"  # Do NOT reveal internal implementation details.
-        ),
+        "instructions": _build_instructions(medication_name),
     }
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -141,17 +202,61 @@ async def create_assistant(name: str = "DAWA P0 Urdu Call Test") -> dict[str, An
 
 
 # ---------------------------------------------------------------------------
+# Assistant instructions update (per-call medication injection)
+# ---------------------------------------------------------------------------
+
+async def update_assistant_instructions(medication_name: str) -> None:
+    """
+    PATCH the existing Uplift assistant's instructions to include the specific
+    medication name for the upcoming call.
+
+    Called automatically by dispatch_call() — not intended for direct use.
+    """
+    if not settings.uplift_assistant_id:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "UPLIFT_ASSISTANT_ID is not configured. "
+                "Run scripts/create_uplift_assistant.py first."
+            ),
+        )
+
+    logger.info(
+        "UPLIFT_ASSISTANT_UPDATE_REQUEST",
+        extra={"assistantId": settings.uplift_assistant_id, "medication": medication_name},
+    )
+
+    payload = {"instructions": _build_instructions(medication_name)}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.patch(
+            f"{UPLIFT_BASE_URL}/realtime-assistants/{settings.uplift_assistant_id}",
+            json=payload,
+            headers=_auth_headers(),
+        )
+
+    _raise_for_uplift_error(response)
+    logger.info(
+        "UPLIFT_ASSISTANT_UPDATED",
+        extra={"assistantId": settings.uplift_assistant_id, "medication": medication_name},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Outbound call dispatch
 # ---------------------------------------------------------------------------
 
-async def dispatch_call() -> dict[str, Any]:
+async def dispatch_call(medication_name: str = "آپ کی دوائی") -> dict[str, Any]:
     """
-    Place a real outbound Urdu call to TEST_PHONE_NUMBER using UPLIFT_ASSISTANT_ID.
+    Place a real outbound Urdu medication-reminder call to TEST_PHONE_NUMBER.
 
-    Both values are read from settings and validated here at invocation time.
-    A unique Idempotency-Key is generated for each call attempt.
+    Steps:
+    1. Validate required secrets (UPLIFT_ASSISTANT_ID, TEST_PHONE_NUMBER).
+    2. PATCH the assistant instructions to embed the specific medication name.
+    3. Dispatch the call via Uplift.
+    4. Append an entry to the in-memory call log.
 
-    Returns a safe dict: {"callId": str, "status": "dispatched"}.
+    Returns a safe dict: {"callId": str, "status": "dispatched", "medication": str, "logId": str}.
     NOTE: "dispatched" means the request was accepted and dialling was initiated.
           It does NOT mean the call was answered or that a conversation occurred.
     """
@@ -174,13 +279,18 @@ async def dispatch_call() -> dict[str, Any]:
             ),
         )
 
+    # Inject medication name into assistant instructions before calling
+    await update_assistant_instructions(medication_name)
+
     idempotency_key = str(uuid.uuid4())
+    log_id = str(uuid.uuid4())
     masked = _mask_phone(settings.test_phone_number)
     logger.info(
         "UPLIFT_CALL_REQUESTED",
         extra={
             "assistantId": settings.uplift_assistant_id,
             "to": masked,
+            "medication": medication_name,
             "idempotencyKey": idempotency_key,
         },
     )
@@ -188,6 +298,10 @@ async def dispatch_call() -> dict[str, Any]:
     payload = {
         "assistantId": settings.uplift_assistant_id,
         "to": settings.test_phone_number,
+        "metadata": {
+            "dawa_log_id": log_id,
+            "medication": medication_name,
+        },
     }
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -204,10 +318,21 @@ async def dispatch_call() -> dict[str, Any]:
     data = response.json()
 
     call_id = data.get("callId") or data.get("id") or data.get("sessionId") or "unknown"
-    logger.info("UPLIFT_CALL_DISPATCHED", extra={"callId": call_id, "to": masked})
+    logger.info(
+        "UPLIFT_CALL_DISPATCHED",
+        extra={"callId": call_id, "to": masked, "medication": medication_name},
+    )
+
+    # Record in call log
+    _append_call_log(log_id=log_id, call_id=call_id, medication=medication_name)
 
     # Only return safe, non-secret information
-    return {"callId": call_id, "status": "dispatched"}
+    return {
+        "callId": call_id,
+        "status": "dispatched",
+        "medication": medication_name,
+        "logId": log_id,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +377,7 @@ async def get_call_status(limit: int = 10) -> list[dict[str, Any]]:
 
 
 def _normalise_session(session: dict[str, Any]) -> dict[str, Any]:
-    """Extract the fields relevant to P0-A status inspection."""
+    """Extract the fields relevant to P0-B status inspection."""
     return {
         "sessionId": session.get("sessionId") or session.get("id"),
         "callId": session.get("callId"),

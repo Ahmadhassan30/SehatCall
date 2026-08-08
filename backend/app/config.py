@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     test_phone_number: str | None = None
     uplift_assistant_id: str | None = None
 
+    # Admin token for privileged endpoints (e.g. GET /api/call-log).
+    # If unset those endpoints return 403. Set as DAWA_ADMIN_TOKEN in Replit Secrets.
+    dawa_admin_token: str | None = None
+
 
 # Module-level singleton — import `settings` everywhere
 settings = Settings()  # raises ValidationError with a clear message if UPLIFTAI_API_KEY is absent
