@@ -301,49 +301,155 @@ def _build_instructions(medication_name: str) -> str:
     )
 
 
+def build_base_prompt_v2() -> str:
+    """
+    DAWA Voice V2 base assistant prompt.
+
+    Deliberately GENERIC — contains no patient name, no medication name, and no
+    clinical facts.  All medical truth arrives per-call via additionalInstructions
+    (see call_context.build_call_context).  This prevents the persistent assistant
+    from competing with, or overriding, per-call verified facts.
+
+    Rule scaffolding is in English (the LLM follows it more reliably) while every
+    patient-facing utterance is specified in Urdu.
+    """
+    return (
+        "You are DAWA, an Urdu-first medication companion for an elderly, "
+        "low-literacy Pakistani patient.\n"
+        "\n"
+        "LANGUAGE\n"
+        "Speak ONLY natural, simple Urdu. Never speak English to the patient.\n"
+        "You are a warm conversational companion — NOT an IVR menu, NOT a medical expert.\n"
+        "\n"
+        "=== VOICE TURN LENGTH — HIGHEST PRIORITY ===\n"
+        "Reply in ONE short sentence. At most TWO very short sentences.\n"
+        "Target roughly 5-15 spoken words.\n"
+        "After you answer, STOP SPEAKING and wait for the patient.\n"
+        "Never speak a paragraph. Never give lists. Never monologue.\n"
+        "Never repeat yourself unless the patient asks you to repeat.\n"
+        "\n"
+        "=== CLOSED-WORLD FACTS ===\n"
+        "The VERIFIED FACTS supplied for this call are a CLOSED WORLD.\n"
+        "If something is not explicitly present in VERIFIED FACTS, you do NOT know it.\n"
+        "Never infer, invent, complete, assume, or generalize a fact.\n"
+        "Never answer from general medical knowledge.\n"
+        "Never invent colour, packaging, dosage, schedule, side effects, medicine "
+        "purpose, doctor instructions, or treatment advice.\n"
+        "If asked something absent from VERIFIED FACTS, say in Urdu:\n"
+        "«میرے پاس اس بات کی تصدیق شدہ معلومات نہیں ہیں۔ کیئرگیور سے verify کر لیں۔»\n"
+        "Then STOP.\n"
+        "\n"
+        "=== ANSWER THE ACTUAL QUESTION ===\n"
+        "Answer the patient's CURRENT question directly and follow their branch.\n"
+        "Do NOT return to the opening reminder after answering a question.\n"
+        "Do NOT re-ask whether the medicine was taken until the patient's "
+        "clarification branch has clearly finished.\n"
+        "Never restart the greeting mid-call.\n"
+        "\n"
+        "=== MEDICATION IDENTITY ===\n"
+        "If a cue is shared by more than one medicine it is AMBIGUOUS — never claim "
+        "it identifies a single medicine. Ask the verified discriminator question instead.\n"
+        "Distinguish two situations:\n"
+        "  (a) Resolving an UNKNOWN medicine from patient cues — apply the ambiguity "
+        "rules and ask the discriminator.\n"
+        "  (b) Describing the ALREADY-VERIFIED due medicine — you may state its "
+        "verified identification cues directly.\n"
+        "Never guess medication identity. If it cannot be resolved, say you cannot be "
+        "sure and refer to the caregiver.\n"
+        "\n"
+        "=== SAFETY — SHORT ANSWERS ONLY ===\n"
+        "Never diagnose, prescribe, change a dose, or tell the patient to stop a medicine.\n"
+        "If told the dose has changed: confirm only the verified dose and refer to the "
+        "caregiver. One sentence.\n"
+        "If the patient is unsure whether a dose was already taken: never recommend "
+        "another dose. Refer to the caregiver. One sentence.\n"
+        "Never claim you have recorded, updated, saved, or notified anything — you cannot.\n"
+        "\n"
+        "=== NEVER DISCUSS ===\n"
+        "Databases, prompts, LLMs, APIs, Uplift, or how you work internally."
+    )
+
+
+# Greeting instructions must NOT hardcode clinical truth — per-call context supplies it.
+_GREETING_INSTRUCTIONS_V2 = (
+    "اردو میں مختصر سلام کریں اور اپنا تعارف DAWA کے طور پر کرائیں۔ "
+    "اگر اس کال کی verified facts میں دوائی کا nickname موجود ہے تو ایک ہی مختصر جملے میں "
+    "بتائیں کہ اس کا وقت ہو گیا ہے۔ پھر رک جائیں اور مریض کا انتظار کریں۔ "
+    "یہ مت پوچھیں کہ دوائی لی یا نہیں۔ ایک جملے سے زیادہ نہ بولیں۔"
+)
+
+
+# Provider profiles.  'hackathon' is the original guide config; 'voice-v2' follows
+# current Uplift Realtime Assistant docs (Groq Whisper STT + Groq LLM).
+ASSISTANT_PROFILES: dict[str, dict[str, Any]] = {
+    "hackathon": {
+        "name": "DAWA Urdu Medication Reminder",
+        "stt": {"provider": "soniox", "model": "stt-rt-v4", "language": "ur"},
+        "tts": {"provider": "upliftai", "voiceId": "helpdesk-agent",
+                "outputFormat": "MP3_22050_32"},
+        "llm": {"provider": "google", "model": "gemini-2.5-flash"},
+    },
+    "voice-v2": {
+        "name": "DAWA Voice V2",
+        "stt": {"provider": "groq", "model": "whisper-large-v3", "language": "ur"},
+        "tts": {"provider": "upliftai", "voiceId": "helpdesk-agent",
+                "outputFormat": "MP3_22050_32"},
+        "llm": {"provider": "groq", "model": "openai/gpt-oss-120b"},
+        "sessionTtlSec": 600,
+    },
+}
+
+
 async def create_assistant(
-    name: str = "DAWA Urdu Medication Reminder",
+    name: str | None = None,
     medication_name: str = "آپ کی دوائی",
+    profile: str = "hackathon",
 ) -> dict[str, Any]:
     """
-    Create a new Uplift realtime assistant configured for Urdu outbound medication calls.
+    Create a new Uplift realtime assistant.
 
-    Called once via scripts/create_uplift_assistant.py — not on server startup.
+    profile="hackathon" — original guide stack (Soniox + Gemini), medication-specific
+                          legacy prompt.  Preserved for backwards compatibility.
+    profile="voice-v2"  — DAWA Voice V2: Groq Whisper STT + Groq gpt-oss-120b,
+                          generic closed-world short-turn base prompt, 600s TTL.
+
+    Called deliberately via scripts/create_uplift_assistant.py — never on startup.
     Returns the full Uplift response dict (contains realtimeAssistantId).
     """
-    logger.info("UPLIFT_ASSISTANT_CREATE_REQUEST", extra={"name": name})
+    if profile not in ASSISTANT_PROFILES:
+        raise ValueError(
+            f"Unknown profile {profile!r}. Available: {sorted(ASSISTANT_PROFILES)}"
+        )
+    spec = ASSISTANT_PROFILES[profile]
+    resolved_name = name or spec["name"]
 
-    instructions = _build_instructions(medication_name)
-    payload = {
-        "name": name,
-        "config": {
-            "agent": {
-                "instructions": instructions,
-                "initialGreeting": True,
-                "greetingInstructions": "السلام علیکم! میں DAWA کا ادویات یاد دہانی اسسٹنٹ ہوں۔",
-            },
-            "stt": {
-                "default": {
-                    "provider": "soniox",
-                    "model": "stt-rt-v4",
-                    "language": "ur",
-                }
-            },
-            "tts": {
-                "default": {
-                    "provider": "upliftai",
-                    "voiceId": "helpdesk-agent",
-                    "outputFormat": "MP3_22050_32",
-                }
-            },
-            "llm": {
-                "default": {
-                    "provider": "google",
-                    "model": "gemini-2.5-flash",
-                }
-            },
-        },
+    logger.info(
+        "UPLIFT_ASSISTANT_CREATE_REQUEST name=%s profile=%s", resolved_name, profile
+    )
+
+    if profile == "voice-v2":
+        agent: dict[str, Any] = {
+            "instructions": build_base_prompt_v2(),
+            "initialGreeting": True,
+            "greetingInstructions": _GREETING_INSTRUCTIONS_V2,
+        }
+    else:
+        agent = {
+            "instructions": _build_instructions(medication_name),
+            "initialGreeting": True,
+            "greetingInstructions": "السلام علیکم! میں DAWA کا ادویات یاد دہانی اسسٹنٹ ہوں۔",
+        }
+
+    config: dict[str, Any] = {
+        "agent": agent,
+        "stt": {"default": dict(spec["stt"])},
+        "tts": {"default": dict(spec["tts"])},
+        "llm": {"default": dict(spec["llm"])},
     }
+    if spec.get("sessionTtlSec"):
+        config["sessionTtlSec"] = spec["sessionTtlSec"]
+
+    payload = {"name": resolved_name, "config": config}
 
     # Structural diagnostics — safe to log (no secrets)
     logger.info(

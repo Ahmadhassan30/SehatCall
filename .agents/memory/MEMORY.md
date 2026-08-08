@@ -1,3 +1,4 @@
 - [P0-A vs future-phase separation](p0a-future-separation.md) — P0-A routes live in test_call.py; future-phase (call-log, webhook, adherence) in future_calls.py, unregistered.
 - [P1 architecture](p1-architecture.md) — P1 adds VMR, demo-call, dawa_store; proxy via api-server artifact; call_context size limits enforced.
 - [P2 scheduler](p2-scheduler.md) — APScheduler AsyncIOScheduler; settings reload required for tests; 120 tests total (P0-A+P1+P2).
+- [Voice agent prompting](voice-agent-prompting.md) — hallucination/loop/cutoff/silence each have a distinct prompt cause; base prompt must stay generic, truth arrives per-call.

@@ -154,6 +154,37 @@ def _compact_resolution_guide(
 # Additional instructions builder
 # ---------------------------------------------------------------------------
 
+def _find_ambiguous_cues(patient_id: str) -> dict[str, str]:
+    """
+    Derive cue key/value pairs that do NOT uniquely identify a medicine —
+    i.e. every one of the patient's medications shares the same value.
+
+    For Razia: package_color=white, tablet_shape=round, storage_location=bedside
+    drawer are all shared, so none of them alone identifies a medicine.
+    Derived from the DB, never hardcoded.
+    """
+    from app.services.dawa_store import get_all_medication_cues_for_patient
+
+    all_cues = get_all_medication_cues_for_patient(patient_id)
+    if len(all_cues) < 2:
+        return {}
+
+    keys: set[str] = set()
+    for cue_map in all_cues.values():
+        keys.update(cue_map.keys())
+
+    ambiguous: dict[str, str] = {}
+    for key in sorted(keys):
+        values = {
+            (cue_map.get(key) or "").lower()
+            for cue_map in all_cues.values()
+        }
+        # Shared across every medication and non-empty → ambiguous on its own
+        if len(values) == 1 and "" not in values:
+            ambiguous[key] = values.pop()
+    return ambiguous
+
+
 def _build_instructions(
     patient: dict,
     medication: dict,
@@ -161,8 +192,13 @@ def _build_instructions(
     resolution_guide: list[dict],
 ) -> str:
     """
-    Build the Urdu additional_instructions string.
-    Max _INSTRUCTIONS_MAX_CHARS chars.  Written in Urdu with Roman Urdu labels.
+    Build the compact DAWA Voice V2 per-call context.
+
+    Structured facts, not prose — realtime LLMs ground far more reliably on
+    short labelled key/value blocks than on paragraphs, and short context
+    reduces the chance of a long hallucinated monologue.
+
+    Max _INSTRUCTIONS_MAX_CHARS chars.
     """
     addr = patient["preferred_address"]
     name = patient["name"]
@@ -172,52 +208,73 @@ def _build_instructions(
     dose_instr = medication["dose_instruction"]
     food_instr = medication["food_instruction"]
 
-    # Build cue block from verified cues only
+    # ── Verified identification of the CURRENT (already-resolved) medicine ──
     if cues:
-        cue_block = "\n".join(f"  - {k}: {v}" for k, v in sorted(cues.items()))
+        cue_block = "\n".join(f"{k}: {v}" for k, v in sorted(cues.items()))
     else:
-        cue_block = "  (کوئی تصدیق شدہ اشارے نہیں)"
+        cue_block = "(none verified)"
 
-    # Build resolution block from VMR guide
+    # ── Resolution rules ────────────────────────────────────────────────────
+    res_lines: list[str] = []
+    ambiguous = _find_ambiguous_cues(patient["id"])
+    for key, val in ambiguous.items():
+        res_lines.append(f"{key}={val} alone -> AMBIGUOUS, do not identify")
+
+    for entry in resolution_guide:
+        disc = entry["discriminator"]
+        for m in entry["mappings"]:
+            label = m.get("nickname") or m.get("clinicalName", "")
+            is_current = m.get("medicationId") == medication["id"]
+            tag = "CURRENT medication" if is_current else "DIFFERENT medication"
+            res_lines.append(f"{disc}={m['value']} -> {label} ({tag})")
+    res_block = "\n".join(res_lines) if res_lines else "(single medication — no ambiguity)"
+
+    # Urdu discriminator question.  Must offer EVERY verified value of a single
+    # discriminating key — offering only the first two would silently exclude a
+    # real medication and push the patient toward a wrong answer.
+    disc_question = ""
     if resolution_guide:
-        res_lines: list[str] = []
-        for entry in resolution_guide:
-            disc = entry["discriminator"]
-            for m in entry["mappings"]:
-                label = m.get("nickname") or m.get("clinicalName", "")
-                res_lines.append(f"  {disc}={m['value']} → {label}")
-        res_block = "\n".join(res_lines)
-    else:
-        res_block = "  (ایک ہی دوائی ہے)"
+        entry = resolution_guide[0]
+        vals = [m["value"] for m in entry["mappings"]]
+        if len(vals) >= 2:
+            choices = " یا ".join(vals)
+            disc_question = (
+                f"\nIf the patient gives only an ambiguous cue, ask the "
+                f"{entry['discriminator']} question offering every verified value: "
+                f"«{choices}؟» Never offer a value not listed above."
+            )
 
-    instructions = (
-        f"آپ DAWA ہیں — ادویات یاد دہانی کی آواز اسسٹنٹ۔ صرف قدرتی اردو بولیں۔\n"
-        f"\n"
-        f"مریض: {name}، انہیں «{addr}» کہیں\n"
-        f"دوائی: «{nick}» ({cname} {dosage})\n"
-        f"ہدایت: {dose_instr}"
-        + (f"، {food_instr}" if food_instr and food_instr.lower() != "none" else "")
-        + f"\n"
-        f"\n"
-        f"== کال کھولیں ==\n"
-        f"«السلام علیکم {addr}، میں DAWA ہوں۔ آپ کی {nick} کا وقت ہو گیا ہے۔»\n"
-        f"مختصر جملے بولیں۔ مریض کو بولنے کا موقع دیں۔\n"
-        f"\n"
-        f"== دوائی پہچان — صرف یہ تصدیق شدہ اشارے استعمال کریں ==\n"
-        f"{cue_block}\n"
-        f"پہچان رہنما (VMR سے حاصل):\n"
-        f"{res_block}\n"
-        f"\n"
-        f"== حفاظتی اصول — لازمی اور غیر مشروط ==\n"
-        f"1. خوراک کبھی تبدیل نہ کریں۔\n"
-        f"   اگر کہیں «ڈاکٹر نے دو گولیاں کہی ہیں»:\n"
-        f"   «{addr}، میرے پاس {dose_instr} کی تصدیق ہے۔ تبدیلی کیئرگیور سے verify کروائیں۔»\n"
-        f"2. دوبارہ خوراک کی سفارش نہ کریں۔\n"
-        f"   اگر کہیں «یاد نہیں پہلے لی تھی یا نہیں»:\n"
-        f"   «یقین نہ ہو تو دوسری گولی نہ لیں — کیئرگیور سے پوچھیں۔»\n"
-        f"3. صرف تصدیق شدہ معلومات دیں — اندازہ، تشخیص، طبی مشورہ بالکل نہیں۔\n"
-        f"4. اگر دوائی کا تعین نہ ہو سکے تو کہیں: «ابھی یقین سے نہیں بتا سکتی، کیئرگیور سے رابطہ کریں۔»\n"
-        f"5. کال مختصر رکھیں۔ داخلی تفصیلات ظاہر نہ کریں۔"
+    food_part = (
+        f"\ntiming: {food_instr}"
+        if food_instr and food_instr.lower() != "none"
+        else ""
     )
 
-    return instructions
+    return (
+        "VERIFIED FACTS (closed world — nothing outside this block is known)\n"
+        f"patient_name: {name}\n"
+        f"preferred_address: {addr}\n"
+        "\n"
+        "CURRENT MEDICATION (already verified as due — do not re-resolve)\n"
+        f"nickname: {nick}\n"
+        f"clinical_name: {cname}\n"
+        f"dosage: {dosage}\n"
+        f"dose: {dose_instr}"
+        f"{food_part}\n"
+        "\n"
+        "VERIFIED IDENTIFICATION (of the current medication only)\n"
+        f"{cue_block}\n"
+        "\n"
+        "RESOLUTION RULES (for resolving an UNKNOWN medicine from patient cues)\n"
+        f"{res_block}"
+        f"{disc_question}\n"
+        "\n"
+        "SAFETY\n"
+        f"dose-change claim -> confirm only «{dose_instr}», verify with caregiver\n"
+        "unsure if already taken -> never recommend another dose, refer to caregiver\n"
+        "fact absent above -> say no verified information, refer to caregiver\n"
+        "\n"
+        "OPENING\n"
+        f"One short Urdu sentence: greet as DAWA and say «{nick}» time has come. Then STOP.\n"
+        "Do not ask whether it was taken. Do not repeat the opening later."
+    )

@@ -7,7 +7,19 @@ Does NOT place a call.
 
 Usage:
     cd backend
-    python scripts/create_uplift_assistant.py [--medication "دوائی کا نام"]
+    python scripts/create_uplift_assistant.py [--profile hackathon|voice-v2]
+                                              [--medication "دوائی کا نام"]
+
+Profiles:
+    hackathon  (default) — original stack: Soniox stt-rt-v4 + Gemini 2.5 Flash,
+                           medication-specific legacy prompt.
+    voice-v2             — DAWA Voice V2: Groq whisper-large-v3 (ur) STT +
+                           Groq openai/gpt-oss-120b LLM + UpliftAI TTS
+                           (helpdesk-agent, unchanged), 600s session TTL,
+                           generic closed-world short-turn base prompt.
+
+Creating a V2 assistant does NOT modify the existing production assistant —
+it creates a separate assistant with its own new realtimeAssistantId.
 
 Required environment variable:
     UPLIFTAI_API_KEY   — your Uplift API key (set in Replit Secrets)
@@ -28,23 +40,35 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-async def main(medication_name: str) -> None:
+async def main(medication_name: str, profile: str) -> None:
     # Import after path adjustment
-    from app.services.uplift import create_assistant  # noqa: PLC0415
+    from app.services.uplift import ASSISTANT_PROFILES, create_assistant  # noqa: PLC0415
+
+    spec = ASSISTANT_PROFILES[profile]
 
     print("=" * 60)
-    print("DAWA P0-B — Create Uplift Urdu Medication-Reminder Assistant")
+    print("DAWA — Create Uplift Urdu Medication-Reminder Assistant")
     print("=" * 60)
     print()
-    print(f"Medication (default for assistant): {medication_name}")
+    print(f"Profile : {profile}")
+    print(f"Name    : {spec['name']}")
+    print(f"STT     : {spec['stt']['provider']} / {spec['stt']['model']} ({spec['stt']['language']})")
+    print(f"LLM     : {spec['llm']['provider']} / {spec['llm']['model']}")
+    print(f"TTS     : {spec['tts']['provider']} / {spec['tts']['voiceId']}")
+    if spec.get("sessionTtlSec"):
+        print(f"TTL     : {spec['sessionTtlSec']}s")
+    if profile == "hackathon":
+        print(f"Medication (default for assistant): {medication_name}")
+    else:
+        print("Base prompt: generic (medication truth supplied per-call)")
     print()
     print("Calling Uplift Singapore endpoint to create assistant…")
     print()
 
     try:
         result = await create_assistant(
-            name="DAWA Urdu Medication Reminder",
             medication_name=medication_name,
+            profile=profile,
         )
     except Exception as exc:  # pragma: no cover
         print(f"ERROR: Assistant creation failed.\n{exc}", file=sys.stderr)
@@ -78,9 +102,17 @@ async def main(medication_name: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create the DAWA Uplift Urdu assistant.")
     parser.add_argument(
+        "--profile",
+        default="hackathon",
+        choices=["hackathon", "voice-v2"],
+        help="Assistant profile to create. 'voice-v2' uses the Groq stack and the "
+             "hardened closed-world prompt. Default: hackathon",
+    )
+    parser.add_argument(
         "--medication",
         default="آپ کی دوائی",
-        help="Default medication name to embed in instructions (Urdu or romanised). Default: 'آپ کی دوائی'",
+        help="Default medication name to embed in instructions (hackathon profile "
+             "only; ignored by voice-v2). Default: 'آپ کی دوائی'",
     )
     args = parser.parse_args()
-    asyncio.run(main(medication_name=args.medication))
+    asyncio.run(main(medication_name=args.medication, profile=args.profile))

@@ -1,0 +1,523 @@
+# DAWA VOICE V2 — URGENT CONVERSATION HARDENING
+
+TIME CRITICAL.
+
+Real Pakistani outbound telephony is CONFIRMED WORKING.
+
+Observed real-call problems:
+
+1. Assistant hallucinates medication/context facts.
+2. It sometimes starts speaking and gets cut off mid-sentence.
+3. It can then remain silent.
+4. Earlier assistant also became repetitive instead of answering the
+   patient's actual question.
+
+DO NOT add product features.
+
+DO NOT touch:
+- VMR algorithm
+- scheduler architecture
+- SQLite schema
+- caregiver app layout
+- call-status parser
+- concurrency patch
+- P0/P1/P2 semantics
+
+This task ONLY hardens the realtime voice-agent configuration and the
+per-call context.
+
+========================================================
+OBJECTIVE
+========================================================
+
+Create a DAWA Voice V2 configuration optimized for:
+
+- extremely short Urdu turns
+- closed-world verified facts
+- direct responses to the patient's actual question
+- no hallucinated medication information
+- no repetitive reminder loop
+- resilience to telephony interruption / turn detection
+- safe low-literacy medication guidance
+
+The assistant must sound like a conversational companion, NOT a scripted
+IVR and NOT a medical expert.
+
+========================================================
+PART 1 — AUDIT CURRENT PROMPTS
+========================================================
+
+Inspect:
+
+backend/scripts/create_uplift_assistant.py
+backend/app/services/call_context.py
+
+Report and fix any prompt characteristics that may cause:
+
+- one-question loops
+- long monologues
+- repeated greeting/reminder
+- invented medicine facts
+- overly verbose safety explanations
+- contradictory base instructions vs per-call instructions
+- generic medication wording overriding the selected medication
+- instructions that imply capabilities DAWA does not actually have
+
+Do not change verified database truth.
+
+========================================================
+PART 2 — CLOSED-WORLD RULE
+========================================================
+
+The assistant must operate under this rule:
+
+VERIFIED FACTS ARE CLOSED-WORLD.
+
+If information is not explicitly present in the verified per-call facts,
+DAWA must NOT infer, invent, complete, assume, or generalize it.
+
+When asked something not present in verified facts, respond briefly with
+the Urdu meaning of:
+
+"Mere paas is baat ki tasdeeq-shuda maloomat nahi hai. Caregiver se
+verify kar lein."
+
+Do NOT answer from general medical knowledge.
+
+Do NOT infer a medicine from normal-world knowledge.
+
+Do NOT make up:
+- colors
+- packaging
+- dosage
+- schedule
+- side effects
+- medicine purpose
+- doctor instructions
+- treatment advice
+
+========================================================
+PART 3 — SHORT-TURN VOICE POLICY
+========================================================
+
+This is critical for the cutoff/silence problem.
+
+Every assistant turn should normally be:
+
+ONE short sentence,
+or at most TWO very short sentences.
+
+Target:
+approximately 5–15 spoken words per response where possible.
+
+Never give paragraphs.
+
+Never list multiple explanations unless the patient explicitly asks.
+
+After answering:
+STOP SPEAKING
+and wait for the patient.
+
+Do not automatically repeat the reminder after answering a clarification.
+
+Examples:
+
+BAD:
+
+"Aapki raat wali dawa Metformin 500 milligram hai jo aapko khane ke baad
+ek tablet leni hai aur iska dabba safed hai..."
+
+GOOD:
+
+"Aapki raat wali goli hai."
+
+Then wait.
+
+If patient asks:
+
+"Kaunsa dabba?"
+
+GOOD:
+
+"Safed dabba, neeli patti wala."
+
+Then wait.
+
+========================================================
+PART 4 — CONVERSATION STATE RULES
+========================================================
+
+The assistant must follow the patient's conversational branch.
+
+Do NOT reset to the opening question after every patient turn.
+
+Example:
+
+DAWA:
+"Ammi, raat wali goli ka waqt ho gaya hai."
+
+Patient:
+"Kaunsi goli?"
+
+DAWA:
+"Raat wali goli — Metformin 500 milligram."
+
+STOP and wait.
+
+Patient:
+"Kaunsa dabba?"
+
+DAWA:
+"Safed dabba, neeli patti wala."
+
+STOP and wait.
+
+Patient:
+"Mere paas do safed hain."
+
+DAWA:
+"Neeli patti wala dekhein."
+
+STOP and wait.
+
+Do not go back to:
+
+"Kya aap ne dawa le li?"
+
+until the clarification branch has clearly finished.
+
+========================================================
+PART 5 — IMPORTANT VMR LANGUAGE
+========================================================
+
+The deterministic backend remains authoritative.
+
+The call context must contain a compact VERIFIED RESOLUTION GUIDE.
+
+For Razia:
+
+PACKAGE COLOR WHITE ALONE:
+AMBIGUOUS
+
+WHITE + BLUE STRIPE:
+Metformin / raat wali goli
+
+WHITE + RED STRIPE:
+Amlodipine / BP wali goli
+
+If patient says only:
+
+"safed"
+
+and the conversation is asking which medicine among the patient's set,
+do NOT claim white uniquely identifies a medicine.
+
+Ask:
+
+"Neeli patti hai ya laal?"
+
+If the currently due medication is Metformin and the patient explicitly
+asks how to recognize THAT already-selected due medicine, it is acceptable
+to say:
+
+"Safed dabba, neeli patti wala."
+
+Be precise about the difference between:
+
+A) resolving an unknown medicine from cues
+and
+B) describing the already verified due medicine.
+
+========================================================
+PART 6 — SAFETY RESPONSES MUST BE SHORT
+========================================================
+
+CASE:
+
+"Doctor ne ab do goliyan kaha hai."
+
+Stored verified dose:
+1 tablet.
+
+DAWA response meaning:
+
+"Mere paas ek goli ki tasdeeq hai. Dose change caregiver se verify karein."
+
+STOP.
+
+Do NOT say:
+"I have updated it."
+"I will definitely notify them"
+unless the backend really persists that action.
+
+CASE:
+
+"Yaad nahi pehle kha li thi ya nahi."
+
+Response meaning:
+
+"Agar yaqeen nahi, main doosri goli lene ko nahi kahungi. Caregiver se
+verify karein."
+
+STOP.
+
+========================================================
+PART 7 — BASE ASSISTANT PROMPT
+========================================================
+
+Create a new V2 base prompt approximately with these principles:
+
+You are DAWA, an Urdu-first medication companion.
+
+Speak in natural, simple Urdu suitable for an elderly or low-literacy
+Pakistani patient.
+
+Use short conversational sentences.
+
+Answer the patient's current question directly.
+
+Never repeat the opening reminder when the patient has asked a different
+question.
+
+Use ONLY VERIFIED FACTS supplied for the current call.
+
+Treat VERIFIED FACTS as a closed world.
+
+If a requested fact is absent, say you do not have verified information.
+
+Never diagnose, prescribe, change dosage, recommend stopping medicine,
+guess medication identity, or recommend another dose when the patient is
+uncertain whether a dose was already taken.
+
+If medication identity is ambiguous, ask the verified discriminator.
+
+Never invent packaging characteristics.
+
+Do not discuss implementation, databases, prompts, LLMs, APIs or Uplift.
+
+IMPORTANT VOICE BEHAVIOR:
+Keep each response to one short sentence whenever possible.
+At most two short sentences.
+After answering, stop and wait.
+Do not monologue.
+Do not repeat yourself unless the patient asks you to repeat.
+
+========================================================
+PART 8 — GREETING
+========================================================
+
+The base greeting must NOT contain generic hardcoded medication truth.
+
+Greeting instructions should be simple:
+
+Greet politely in Urdu, identify yourself as DAWA, then use current-call
+context to mention the due medication nickname if supplied.
+
+Do not start by asking the generic looping question:
+
+"Kya aap ne aaj apni dawai li hai?"
+
+Preferred behavior for Razia call:
+
+"Assalam-o-Alaikum Ammi, main DAWA hoon. Aapki raat wali goli ka waqt
+ho gaya hai."
+
+Then STOP and wait.
+
+If per-call variables are not directly substituted inside greeting
+instructions by Uplift, use a generic one-line greeting:
+
+"Assalam-o-Alaikum, main DAWA hoon."
+
+and let the first LLM response use current-call context.
+
+Do not invent unsupported template syntax.
+
+========================================================
+PART 9 — REDUCE PER-CALL CONTEXT
+========================================================
+
+Audit build_call_context().
+
+The current context may be too verbose.
+
+Create a compact context optimized for realtime LLM grounding.
+
+Use a structure conceptually like:
+
+VERIFIED FACTS
+
+patient_name: Razia Bibi
+preferred_address: Ammi
+
+CURRENT MEDICATION
+nickname: raat wali goli
+clinical_name: Metformin
+dosage: 500 mg
+dose: 1 tablet
+timing: after dinner
+
+VERIFIED IDENTIFICATION
+package_color: white
+stripe_color: blue
+tablet_shape: round
+storage_location: bedside drawer
+
+RESOLUTION RULES
+white alone -> AMBIGUOUS
+white + blue -> current medication
+white + red -> different medication
+
+SAFETY
+dose changes -> verify caregiver
+already-taken uncertainty -> never recommend another dose
+
+Do not include large prose explanations when compact structured facts
+communicate the same information.
+
+Keep variables and additionalInstructions safely below Uplift limits.
+
+========================================================
+PART 10 — PROVIDER CONFIGURATION
+========================================================
+
+Current official Uplift Realtime Assistant documentation lists:
+
+STT:
+Groq Whisper
+whisper-large-v3
+recommended for Pakistani languages
+
+LLM:
+Groq
+openai/gpt-oss-120b for best quality
+openai/gpt-oss-20b for faster responses
+
+TTS:
+UpliftAI
+
+The hackathon guide used:
+Soniox stt-rt-v4 / ur
+Gemini 2.5 Flash
+
+DO NOT silently change the existing production assistant.
+
+Instead make the bootstrap script support an explicit V2 profile.
+
+Preferred V2 profile, IF accepted by the current Singapore endpoint:
+
+STT:
+provider = groq
+model = whisper-large-v3
+language = ur
+
+TTS:
+provider = upliftai
+keep the current working Uplift voice/output format
+
+LLM:
+provider = groq
+model = openai/gpt-oss-120b
+
+Call this profile approximately:
+
+DAWA Voice V2
+
+Keep the old hackathon profile available only if doing so is trivial.
+
+Do NOT add user-supplied provider API keys unless Uplift requires them.
+
+If mocked schema validation or existing API contract indicates the
+Singapore calling endpoint does not accept this current-doc profile,
+DO NOT guess.
+Report the conflict.
+
+========================================================
+PART 11 — SESSION TTL
+========================================================
+
+If supported by the current documented assistant schema, set a reasonable
+session TTL such as:
+
+600 seconds
+
+for DAWA Voice V2.
+
+Do not implement an artificial 30-second call timeout.
+
+The observed mid-sentence cutoff must not be "fixed" by increasing random
+timeouts without evidence.
+
+========================================================
+PART 12 — TESTS
+========================================================
+
+Add tests proving:
+
+1. base prompt contains closed-world rule
+2. base prompt says answer actual question directly
+3. base prompt prohibits repeated reminder loop
+4. base prompt requires short responses
+5. base prompt prohibits invented clinical facts
+6. base prompt prohibits invented package cues
+7. base prompt prohibits dosage changes
+8. base prompt prohibits double-dose recommendation
+9. Razia call context contains selected medication
+10. context contains only verified cues
+11. compact context stays below Uplift limits
+12. medication nickname is included
+13. resolution guide includes white ambiguity
+14. resolution guide includes blue/red distinction
+15. generic bootstrap prompt does not hardcode Metformin/Razia
+16. greeting does not force "have you taken your medicine?" loop
+17. V2 provider payload has exactly the intended providers/models
+18. no automated test creates a real assistant
+19. no automated test places a real call
+20. all existing tests still pass
+
+========================================================
+PART 13 — NEW ASSISTANT CREATION SCRIPT
+========================================================
+
+Do NOT automatically create DAWA Voice V2.
+
+Provide a deliberate command such as:
+
+python scripts/create_uplift_assistant.py --profile voice-v2
+
+or equivalent.
+
+When manually run, it should create ONE assistant and print:
+
+realtimeAssistantId
+
+Then instruct the developer to replace:
+
+UPLIFT_ASSISTANT_ID
+
+with the new V2 ID and restart the backend.
+
+Do not delete/revoke the existing assistant automatically.
+
+========================================================
+COMPLETION REPORT
+========================================================
+
+STOP after implementation and tests.
+
+Return:
+
+## DAWA Voice V2 Hardening Report
+
+### Hallucination root cause
+### Repetition root cause
+### Cutoff mitigation
+### Base prompt changes
+### Call-context changes
+### V2 model stack
+### Exact manual creation command
+### Tests
+### Total passing
+### Confirmation no real assistant/call was created automatically
+
+Then STOP.
