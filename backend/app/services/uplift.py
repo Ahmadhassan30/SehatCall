@@ -1,0 +1,269 @@
+"""
+Uplift AI service layer for DAWA P0-A.
+
+All HTTP communication with the Uplift API is centralised here.
+No raw Uplift calls should appear in route handlers.
+
+Singapore endpoint (ap-southeast-1) is used exclusively — this is the only
+region that supports outbound calls to Pakistani phone numbers.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from typing import Any
+
+import httpx
+from fastapi import HTTPException
+
+from app.config import UPLIFT_BASE_URL, settings
+
+logger = logging.getLogger("dawa.uplift")
+
+
+# ---------------------------------------------------------------------------
+# Phone number masking helper
+# ---------------------------------------------------------------------------
+
+def _mask_phone(number: str) -> str:
+    """Mask a phone number for safe logging, e.g. +92XXXXXXX4567."""
+    if len(number) <= 6:
+        return "***"
+    return number[:3] + "*" * (len(number) - 6) + number[-4:]
+
+
+# ---------------------------------------------------------------------------
+# Auth headers
+# ---------------------------------------------------------------------------
+
+def _auth_headers() -> dict[str, str]:
+    """Return the Authorization + Content-Type headers required by Uplift."""
+    return {
+        "Authorization": f"Bearer {settings.upliftai_api_key}",
+        "Content-Type": "application/json",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Error normalisation
+# ---------------------------------------------------------------------------
+
+def _raise_for_uplift_error(response: httpx.Response) -> None:
+    """Translate Uplift HTTP error codes into descriptive FastAPI HTTPExceptions."""
+    if response.is_success:
+        return
+
+    status = response.status_code
+    try:
+        body = response.json()
+        uplift_message = body.get("message") or body.get("error") or str(body)
+    except Exception:
+        uplift_message = response.text or "(no body)"
+
+    logger.warning(
+        "UPLIFT_API_ERROR",
+        extra={"http_status": status, "uplift_message": uplift_message},
+    )
+
+    error_map: dict[int, tuple[int, str]] = {
+        400: (400, f"Uplift rejected the request (invalid request/number): {uplift_message}"),
+        401: (401, "Uplift API key is invalid or missing."),
+        402: (402, "Uplift account has insufficient credits to place a call."),
+        404: (404, f"Uplift resource not found (check UPLIFT_ASSISTANT_ID): {uplift_message}"),
+        429: (429, f"Uplift rate or concurrency limit reached: {uplift_message}"),
+        500: (502, f"Uplift infrastructure error: {uplift_message}"),
+    }
+
+    if status == 409:
+        # 409 can mean either "number busy" or "duplicate in-flight call"
+        detail = f"Uplift conflict (number busy or duplicate call in flight): {uplift_message}"
+        raise HTTPException(status_code=409, detail=detail)
+
+    http_status, detail = error_map.get(status, (502, f"Unexpected Uplift error {status}: {uplift_message}"))
+    raise HTTPException(status_code=http_status, detail=detail)
+
+
+# ---------------------------------------------------------------------------
+# Assistant creation
+# ---------------------------------------------------------------------------
+
+async def create_assistant(name: str = "DAWA P0 Urdu Call Test") -> dict[str, Any]:
+    """
+    Create a new Uplift realtime assistant configured for Urdu outbound calls.
+
+    This is intended to be called once via the bootstrap script, not on server startup.
+
+    Returns the full Uplift response dict (contains realtimeAssistantId).
+    """
+    logger.info("UPLIFT_ASSISTANT_CREATE_REQUEST", extra={"name": name})
+
+    payload = {
+        "name": name,
+        "stt": {
+            "provider": "soniox",
+            "model": "stt-rt-v4",
+            "language": "ur",
+        },
+        "tts": {
+            "provider": "upliftai",
+            "voiceId": "helpdesk-agent",
+            "outputFormat": "MP3_22050_32",
+        },
+        "llm": {
+            "provider": "google",
+            "model": "gemini-2.5-flash",
+        },
+        "initialGreeting": True,
+        # Assistant instructions in Urdu (Nastaliq) + English comments
+        "instructions": (
+            "آپ DAWA کا ایک ٹیسٹ اسسٹنٹ ہیں۔ "  # You are a DAWA test assistant.
+            "براہ کرم پہلے سلام کریں اور پوچھیں کہ کال کرنے والا کیسا ہے۔ "  # Greet first, ask how the caller is.
+            "صرف اردو میں بات کریں۔ "  # Speak only in Urdu.
+            "مختصر اور قدرتی انداز میں بات کریں۔ "  # Speak briefly and naturally.
+            "اپنا تعارف DAWA انٹیگریشن ٹیسٹ اسسٹنٹ کے طور پر کروائیں۔ "  # Introduce as DAWA integration-test assistant.
+            "طبی مشورہ نہ دیں اور ادویات پر بات نہ کریں۔ "  # Do NOT give medical advice or discuss medication.
+            "اندرونی تفصیلات ظاہر نہ کریں۔"  # Do NOT reveal internal implementation details.
+        ),
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{UPLIFT_BASE_URL}/realtime-assistants",
+            json=payload,
+            headers=_auth_headers(),
+        )
+
+    _raise_for_uplift_error(response)
+    data = response.json()
+    logger.info("UPLIFT_ASSISTANT_CREATED", extra={"assistantId": data.get("realtimeAssistantId")})
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Outbound call dispatch
+# ---------------------------------------------------------------------------
+
+async def dispatch_call() -> dict[str, Any]:
+    """
+    Place a real outbound Urdu call to TEST_PHONE_NUMBER using UPLIFT_ASSISTANT_ID.
+
+    Both values are read from settings and validated here at invocation time.
+    A unique Idempotency-Key is generated for each call attempt.
+
+    Returns a safe dict: {"callId": str, "status": "dispatched"}.
+    NOTE: "dispatched" means the request was accepted and dialling was initiated.
+          It does NOT mean the call was answered or that a conversation occurred.
+    """
+    # Validate call-time required secrets
+    if not settings.uplift_assistant_id:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "UPLIFT_ASSISTANT_ID is not configured. "
+                "Run scripts/create_uplift_assistant.py first, then add the returned ID "
+                "to Replit Secrets as UPLIFT_ASSISTANT_ID and restart the workflow."
+            ),
+        )
+    if not settings.test_phone_number:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "TEST_PHONE_NUMBER is not configured. "
+                "Add your Pakistani test phone number to Replit Secrets as TEST_PHONE_NUMBER."
+            ),
+        )
+
+    idempotency_key = str(uuid.uuid4())
+    masked = _mask_phone(settings.test_phone_number)
+    logger.info(
+        "UPLIFT_CALL_REQUESTED",
+        extra={
+            "assistantId": settings.uplift_assistant_id,
+            "to": masked,
+            "idempotencyKey": idempotency_key,
+        },
+    )
+
+    payload = {
+        "assistantId": settings.uplift_assistant_id,
+        "to": settings.test_phone_number,
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{UPLIFT_BASE_URL}/calls",
+            json=payload,
+            headers={
+                **_auth_headers(),
+                "Idempotency-Key": idempotency_key,
+            },
+        )
+
+    _raise_for_uplift_error(response)
+    data = response.json()
+
+    call_id = data.get("callId") or data.get("id") or data.get("sessionId") or "unknown"
+    logger.info("UPLIFT_CALL_DISPATCHED", extra={"callId": call_id, "to": masked})
+
+    # Only return safe, non-secret information
+    return {"callId": call_id, "status": "dispatched"}
+
+
+# ---------------------------------------------------------------------------
+# Call / session status
+# ---------------------------------------------------------------------------
+
+async def get_call_status(limit: int = 10) -> list[dict[str, Any]]:
+    """
+    Retrieve recent Uplift session states for the configured assistant.
+
+    Returns a normalised list of compact session summaries.
+    The caller is responsible for polling at a polite cadence (2–5 seconds).
+    """
+    if not settings.uplift_assistant_id:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "UPLIFT_ASSISTANT_ID is not configured. "
+                "Complete the assistant bootstrap step before checking call status."
+            ),
+        )
+
+    logger.info(
+        "UPLIFT_CALL_STATUS_CHECKED",
+        extra={"assistantId": settings.uplift_assistant_id, "limit": limit},
+    )
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            f"{UPLIFT_BASE_URL}/realtime-assistants/{settings.uplift_assistant_id}/sessions",
+            params={"limit": limit},
+            headers=_auth_headers(),
+        )
+
+    _raise_for_uplift_error(response)
+    data = response.json()
+
+    # Normalise: Uplift may return {"sessions": [...]} or a bare list
+    raw_sessions: list[dict] = data if isinstance(data, list) else data.get("sessions", [])
+
+    return [_normalise_session(s) for s in raw_sessions]
+
+
+def _normalise_session(session: dict[str, Any]) -> dict[str, Any]:
+    """Extract the fields relevant to P0-A status inspection."""
+    return {
+        "sessionId": session.get("sessionId") or session.get("id"),
+        "callId": session.get("callId"),
+        "status": session.get("status"),
+        "dispatched": session.get("dispatched"),
+        "dialing": session.get("dialing"),
+        "ringing": session.get("ringing"),
+        "answered": session.get("answered"),
+        "completed": session.get("completed"),
+        "failed": session.get("failed"),
+        "failureReason": session.get("failureReason"),
+        "startedAt": session.get("startedAt") or session.get("createdAt"),
+        "endedAt": session.get("endedAt"),
+    }
