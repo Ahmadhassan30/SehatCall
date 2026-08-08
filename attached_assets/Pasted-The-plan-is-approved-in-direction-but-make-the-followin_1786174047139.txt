@@ -1,0 +1,97 @@
+The plan is approved in direction, but make the following corrections before implementation.
+
+Do NOT begin coding until the plan reflects these changes.
+
+1. CONFIGURATION LIFECYCLE
+
+UPLIFT_ASSISTANT_ID must NOT be globally required at application/config import time.
+
+The assistant ID does not exist until the bootstrap script creates the assistant.
+
+Configuration rules must be:
+
+- UPLIFTAI_API_KEY:
+  required for assistant creation and every Uplift API operation.
+
+- TEST_PHONE_NUMBER:
+  required only when POST /api/test-call is invoked.
+
+- UPLIFT_ASSISTANT_ID:
+  optional at base configuration load;
+  required only when /api/test-call or /api/test-call/status is invoked.
+
+The assistant bootstrap script MUST work when UPLIFT_ASSISTANT_ID is absent.
+
+Missing configuration should produce a clear actionable error at the point where that value is actually needed.
+
+2. PYDANTIC SETTINGS
+
+If using BaseSettings with modern Pydantic, explicitly add and use:
+
+pydantic-settings
+
+Do not assume BaseSettings is part of the base pydantic package.
+
+Keep configuration simple.
+
+3. PYTHON BACKEND IS AUTHORITATIVE
+
+The plan currently references:
+
+artifacts/api-server/src/app.ts
+
+This is NOT part of P0-A's intended implementation.
+
+Do not implement the Uplift spike in Node/TypeScript and do not modify unrelated generated artifacts merely because they already exist.
+
+The authoritative implementation root for P0-A is:
+
+backend/
+
+using:
+
+Python + FastAPI + httpx + Pydantic.
+
+If Replit requires root-level configuration to run the backend, make only the minimal configuration necessary while keeping all application code under backend/.
+
+4. REAL-CALL SAFETY
+
+No automated command, test, server startup hook, bootstrap script, or Replit workflow may automatically place a real phone call.
+
+A real outbound call may happen ONLY after the developer deliberately invokes:
+
+POST /api/test-call
+
+Automated tests must mock all Uplift requests and must consume zero Uplift calling credits.
+
+The assistant creation script creates the assistant only; it must not place a call.
+
+5. MANUAL TEST ORDER
+
+The README must clearly enforce this exact sequence:
+
+A. Start with UPLIFTAI_API_KEY and TEST_PHONE_NUMBER configured.
+B. Run the assistant creation script.
+C. Obtain realtimeAssistantId.
+D. Add that value to Replit Secrets as UPLIFT_ASSISTANT_ID.
+E. Restart/reload configuration if necessary.
+F. Start FastAPI.
+G. Verify GET /health.
+H. Deliberately invoke POST /api/test-call.
+I. Answer the real phone call and test two-way Urdu.
+J. Inspect GET /api/test-call/status.
+
+6. Preserve all existing P0-A scope restrictions.
+
+Do NOT add:
+PostgreSQL,
+VMR,
+memory,
+scheduler,
+frontend,
+tool calling,
+RPC,
+medication features,
+or any later DAWA component.
+
+After updating the plan, show me the corrected plan for approval before implementation.
