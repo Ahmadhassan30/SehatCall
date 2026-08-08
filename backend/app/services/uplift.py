@@ -43,6 +43,21 @@ from app.services.voice_catalog import (
 logger = logging.getLogger("dawa.uplift")
 
 
+class IncompleteAssistantConfiguration(HTTPException):
+    """Raised when a remote assistant lost required Voice V2 sections."""
+
+    dawa_code = "UPLIFT_ASSISTANT_INCOMPLETE"
+
+    def __init__(self, issues: list[str]):
+        super().__init__(
+            status_code=502,
+            detail=(
+                "Uplift assistant is incomplete and cannot be updated safely. "
+                f"Missing: {', '.join(issues)}."
+            ),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Phone number masking helper
 # ---------------------------------------------------------------------------
@@ -401,9 +416,44 @@ ASSISTANT_PROFILES: dict[str, dict[str, Any]] = {
         "tts": {"provider": "upliftai", "voiceId": "helpdesk-agent",
                 "outputFormat": "MP3_22050_32"},
         "llm": {"provider": "groq", "model": "openai/gpt-oss-120b"},
-        "sessionTtlSec": 600,
+        "session": {"ttl": 600},
     },
 }
+
+
+def assistant_configuration_issues(assistant: dict[str, Any]) -> list[str]:
+    """Return missing persisted config paths without exposing prompt contents."""
+    config = assistant.get("config")
+    if not isinstance(config, dict):
+        return ["config"]
+
+    issues: list[str] = []
+    agent = config.get("agent")
+    if not isinstance(agent, dict):
+        issues.append("config.agent")
+    elif not agent.get("instructions"):
+        issues.append("config.agent.instructions")
+
+    for section in ("stt", "tts", "llm"):
+        section_config = config.get(section)
+        if not isinstance(section_config, dict) or not isinstance(
+            section_config.get("default"), dict
+        ):
+            issues.append(f"config.{section}.default")
+
+    return issues
+
+
+async def get_assistant_configuration(assistant_id: str) -> dict[str, Any]:
+    """Fetch an assistant for read-only post-bootstrap validation."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            f"{UPLIFT_BASE_URL}/realtime-assistants/{assistant_id}",
+            headers=_auth_headers(),
+        )
+
+    _raise_for_uplift_error(response)
+    return response.json()
 
 
 async def create_assistant(
@@ -439,12 +489,14 @@ async def create_assistant(
             "instructions": build_base_prompt_v2(),
             "initialGreeting": True,
             "greetingInstructions": _GREETING_INSTRUCTIONS_V2,
+            "tools": [],
         }
     else:
         agent = {
             "instructions": _build_instructions(medication_name),
             "initialGreeting": True,
             "greetingInstructions": "السلام علیکم! میں DAWA کا ادویات یاد دہانی اسسٹنٹ ہوں۔",
+            "tools": [],
         }
 
     tts = dict(spec["tts"])
@@ -460,10 +512,15 @@ async def create_assistant(
         "tts": {"default": tts},
         "llm": {"default": dict(spec["llm"])},
     }
-    if spec.get("sessionTtlSec"):
-        config["sessionTtlSec"] = spec["sessionTtlSec"]
+    if spec.get("session"):
+        config["session"] = dict(spec["session"])
 
-    payload = {"name": resolved_name, "config": config}
+    payload = {
+        "name": resolved_name,
+        "description": "DAWA Urdu-first medication companion",
+        "public": False,
+        "config": config,
+    }
 
     # Structural diagnostics — safe to log (no secrets)
     logger.info(
@@ -482,6 +539,20 @@ async def create_assistant(
 
     _raise_for_uplift_error(response)
     data = response.json()
+    if "config" in data:
+        issues = assistant_configuration_issues(data)
+        if issues:
+            logger.error(
+                "UPLIFT_ASSISTANT_INCOMPLETE missing=%s",
+                ",".join(issues),
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Uplift created an incomplete assistant configuration. "
+                    f"Missing: {', '.join(issues)}."
+                ),
+            )
     logger.info("UPLIFT_ASSISTANT_CREATED", extra={"assistantId": data.get("realtimeAssistantId")})
     return data
 
@@ -685,14 +756,10 @@ async def update_assistant_voice(voice_id: str, assistant_id: str | None = None)
     """
     Point the existing Voice V2 assistant at a different Uplift TTS voice.
 
-    Uses the documented partial-update endpoint
-    (POST /realtime-assistants/{id}, "only the fields you include will be
-    updated") so the agent instructions, greeting, STT and LLM configuration of
-    Voice V2 are left completely untouched.
-
-    The COMPLETE tts.default object is sent — not just voiceId — because nested
-    partial-merge semantics for a sub-object are not guaranteed, and a dropped
-    provider/outputFormat would break telephony audio.
+    Uplift's regional endpoint replaces ``config`` when a partial config is
+    posted, despite the API documentation describing partial updates. Fetch and
+    resend the complete persisted config so agent instructions, greeting, STT,
+    LLM and session configuration survive a voice change.
 
     Raises HTTPException if Uplift rejects the update, so the caller can avoid
     persisting a voice the assistant is not actually using.
@@ -710,17 +777,20 @@ async def update_assistant_voice(voice_id: str, assistant_id: str | None = None)
             detail="UPLIFT_ASSISTANT_ID is not configured.",
         )
 
-    payload = {
-        "config": {
-            "tts": {
-                "default": {
-                    "provider": "upliftai",
-                    "voiceId": voice_id,
-                    "outputFormat": "MP3_22050_32",
-                }
-            }
+    persisted = await get_assistant_configuration(str(target))
+    issues = assistant_configuration_issues(persisted)
+    if issues:
+        raise IncompleteAssistantConfiguration(issues)
+
+    config = dict(persisted["config"])
+    config["tts"] = {
+        "default": {
+            "provider": "upliftai",
+            "voiceId": voice_id,
+            "outputFormat": "MP3_22050_32",
         }
     }
+    payload = {"config": config}
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(

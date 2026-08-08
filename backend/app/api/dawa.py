@@ -986,8 +986,18 @@ async def set_patient_voice_endpoint(
             await uplift_service.update_assistant_voice(
                 body.voiceId, assistant_id=assistant_id
             )
-        except HTTPException:
-            raise
+        except HTTPException as exc:
+            if getattr(exc, "dawa_code", None) == "UPLIFT_ASSISTANT_INCOMPLETE":
+                # Historical TTS-only updates replaced the assistant's full
+                # config. Save the new choice and let the next reminder create
+                # a complete replacement with this voice baked in.
+                dawa_store.set_patient_assistant_id(patient["id"], None)
+                logger.warning(
+                    "DAWA_VOICE_ASSISTANT_RESET patient=%s reason=incomplete_config",
+                    patient["id"],
+                )
+            else:
+                raise
         except Exception:
             raise HTTPException(
                 status_code=502,
@@ -1001,6 +1011,7 @@ async def set_patient_voice_endpoint(
     return _serialise_patient(updated)  # type: ignore[arg-type]
 
 
+@router.get("/voices/{voice_id}/preview")
 @router.post("/voices/{voice_id}/preview")
 async def preview_voice(
     voice_id: str,

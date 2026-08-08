@@ -51,7 +51,17 @@ export default function OnboardingScreen() {
   const router = useRouter();
   const { apiBaseUrl } = useDawa();
   const { data: session } = authClient.useSession();
-  const { patient, createPatient, updatePatient, sendPhoneCode, verifyPhoneCode } = useP3();
+  const {
+    patient,
+    patientLoading,
+    patientReady,
+    patientError,
+    refreshPatient,
+    createPatient,
+    updatePatient,
+    sendPhoneCode,
+    verifyPhoneCode,
+  } = useP3();
 
   const [step, setStep] = useState<Step>('details');
   const [name, setName] = useState('');
@@ -70,13 +80,17 @@ export default function OnboardingScreen() {
   // nothing to verify until a number is entered.
   useEffect(() => {
     if (!patient) return;
+    if (patient.phoneVerified) {
+      router.replace('/(tabs)');
+      return;
+    }
     setName((v) => v || patient.name);
     setAddress((v) => v || patient.preferredAddress);
     if (!patient.phoneVerified && patient.phoneVerificationInProgress && patient.maskedPhone) {
       setMaskedPhone(patient.maskedPhone);
       setStep('verify');
     }
-  }, [patient]);
+  }, [patient, router]);
 
   // Resend cooldown ticker.
   useEffect(() => {
@@ -172,6 +186,30 @@ export default function OnboardingScreen() {
     await authClient.signOut();
     router.replace('/(auth)/sign-in');
   };
+
+  // Never flash setup while resolving this account or while leaving for the
+  // main app with an already-verified patient.
+  if (!patientReady || patientLoading || patient?.phoneVerified) {
+    return (
+      <View style={[styles.screen, styles.loadingScreen]}>
+        <StatusBar style="dark" />
+        <ActivityIndicator size="large" color={C.blue} />
+      </View>
+    );
+  }
+
+  if (patientError) {
+    return (
+      <View style={[styles.screen, styles.loadingScreen]}>
+        <StatusBar style="dark" />
+        <Text style={styles.lookupErrorTitle}>Couldn&apos;t load your patient</Text>
+        <Text style={styles.lookupErrorText}>{patientError}</Text>
+        <TouchableOpacity style={styles.lookupRetryButton} onPress={refreshPatient}>
+          <Text style={styles.lookupRetryText}>Try again</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView
@@ -322,6 +360,33 @@ export default function OnboardingScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: C.cream },
+  loadingScreen: { alignItems: 'center', justifyContent: 'center' },
+  lookupErrorTitle: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 20,
+    color: C.navy,
+    marginBottom: 10,
+  },
+  lookupErrorText: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 14,
+    lineHeight: 20,
+    color: C.muted,
+    marginBottom: 20,
+    paddingHorizontal: 28,
+    textAlign: 'center',
+  },
+  lookupRetryButton: {
+    backgroundColor: C.blue,
+    borderRadius: 8,
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+  },
+  lookupRetryText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 15,
+    color: C.white,
+  },
   scroll: { padding: 24, paddingBottom: 60 },
 
   header: { alignItems: 'center', paddingVertical: 28 },

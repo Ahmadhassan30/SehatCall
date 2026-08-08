@@ -20,6 +20,7 @@ import { useP3, type P3Voice } from '@/context/P3Context';
 import { useDawa } from '@/context/DawaContext';
 import { DawaHeader } from '@/components/DawaHeader';
 import { authClient } from '@/lib/auth-client';
+import { authenticatedMediaSource } from '@/lib/api';
 
 const C = {
   cream: '#F7F3E8',
@@ -59,17 +60,23 @@ function Field({ label, value, onChangeText, placeholder, multiline }: {
   );
 }
 
-function VoiceRow({ voice, selected, onSelect, onPreview, previewing }: {
+function VoiceRow({ voice, selected, disabled, onSelect, onPreview, previewing }: {
   voice: P3Voice;
   selected: boolean;
+  disabled: boolean;
   onSelect: () => void;
   onPreview: () => void;
   previewing: boolean;
 }) {
   return (
     <TouchableOpacity
-      style={[styles.voiceRow, selected && styles.voiceRowSelected]}
+      style={[
+        styles.voiceRow,
+        selected && styles.voiceRowSelected,
+        disabled && styles.voiceRowDisabled,
+      ]}
       onPress={onSelect}
+      disabled={disabled}
       activeOpacity={0.8}
     >
       <View style={styles.voiceInfo}>
@@ -88,7 +95,7 @@ function VoiceRow({ voice, selected, onSelect, onPreview, previewing }: {
           <TouchableOpacity
             style={styles.previewBtn}
             onPress={onPreview}
-            disabled={previewing}
+            disabled={previewing || disabled}
           >
             {previewing ? (
               <ActivityIndicator size="small" color={C.blue} />
@@ -187,7 +194,11 @@ export default function SettingsScreen() {
       if (playingVoiceId === voice.id) return; // already playing, let it finish
       setPlayingVoiceId(voice.id);
       try {
-        await audioPlayer.replace({ uri: `${apiBaseUrl}/api/dawa/voices/${voice.id}/preview` });
+        const source = await authenticatedMediaSource(
+          apiBaseUrl,
+          `/api/dawa/voices/${voice.id}/preview`
+        );
+        audioPlayer.replace(source);
         audioPlayer.play();
         // Reset playing indicator after a reasonable max preview duration
         setTimeout(() => setPlayingVoiceId(null), 8000);
@@ -266,7 +277,7 @@ export default function SettingsScreen() {
         <SectionTitle label="DAWA VOICE" />
         <View style={styles.card}>
           <Text style={styles.voiceNote}>
-            Choose the voice Razia Bibi hears on every reminder call. Tap Preview to hear a short sample before selecting.
+            Choose the voice {patient?.name ?? 'the patient'} hears on every reminder call. Tap Preview to hear a short sample before selecting.
           </Text>
           {patient?.preferredVoiceName ? (
             <View style={styles.currentVoiceRow}>
@@ -291,7 +302,10 @@ export default function SettingsScreen() {
                 key={v.id}
                 voice={v}
                 selected={selectedVoiceId === v.id}
-                onSelect={() => !voiceChanging && handleSetVoice(v.id)}
+                disabled={voiceChanging}
+                onSelect={() => {
+                  if (selectedVoiceId !== v.id) handleSetVoice(v.id);
+                }}
                 onPreview={() => handlePreview(v)}
                 previewing={playingVoiceId === v.id}
               />
@@ -431,6 +445,7 @@ const styles = StyleSheet.create({
     borderColor: C.blue,
     backgroundColor: '#EDF4F8',
   },
+  voiceRowDisabled: { opacity: 0.65 },
   voiceInfo: { flex: 1 },
   voiceName: { fontFamily: 'Inter_500Medium', fontSize: 15, color: C.navy },
   voiceNameSelected: { fontFamily: 'Inter_600SemiBold', color: C.blue },

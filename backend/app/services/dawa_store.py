@@ -297,8 +297,8 @@ def mark_phone_verified(patient_id: str) -> None:
         conn.execute("DELETE FROM phone_verifications WHERE patient_id = ?", (patient_id,))
 
 
-def set_patient_assistant_id(patient_id: str, assistant_id: str) -> None:
-    """Cache this patient's dedicated Uplift assistant so it is created once."""
+def set_patient_assistant_id(patient_id: str, assistant_id: str | None) -> None:
+    """Set or clear the patient's cached dedicated Uplift assistant ID."""
     with _connect() as conn:
         conn.execute(
             "UPDATE patients SET assistant_id = ? WHERE id = ?",

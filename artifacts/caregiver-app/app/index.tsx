@@ -13,7 +13,7 @@
  * is built around calls, and DAWA will not place one until the number is proved.
  */
 import React, { useEffect } from 'react';
-import { View, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
 import { useRouter } from 'expo-router';
 import { authClient } from '@/lib/auth-client';
 import { useP3 } from '@/context/P3Context';
@@ -21,7 +21,7 @@ import { useDawa } from '@/context/DawaContext';
 
 export default function Root() {
   const { data: session, isPending } = authClient.useSession();
-  const { patient, patientLoading } = useP3();
+  const { patient, patientLoading, patientReady, patientError, refreshPatient } = useP3();
   const { apiBaseUrl } = useDawa();
   const router = useRouter();
 
@@ -33,8 +33,13 @@ export default function Root() {
       return;
     }
 
-    // Session is valid — wait for P3Context to finish loading if a URL is set
-    if (apiBaseUrl && patientLoading) return;
+    // Wait for the lookup tied to this authenticated user. An earlier
+    // unauthenticated 401 must never be mistaken for "no patient".
+    if (apiBaseUrl && (!patientReady || patientLoading)) return;
+
+    // A failed lookup is not evidence that setup is missing. Stay here and
+    // offer retry instead of sending an existing caregiver through onboarding.
+    if (patientError) return;
 
     if (!patient || !patient.phoneVerified) {
       // Either apiBaseUrl is not set (Settings first), no patient exists yet,
@@ -44,7 +49,19 @@ export default function Root() {
     }
 
     router.replace('/(tabs)');
-  }, [session, isPending, patient, patientLoading, apiBaseUrl]);
+  }, [session, isPending, patient, patientLoading, patientReady, patientError, apiBaseUrl]);
+
+  if (session && patientReady && patientError) {
+    return (
+      <View style={styles.screen}>
+        <Text style={styles.errorTitle}>Couldn&apos;t load your patient</Text>
+        <Text style={styles.errorText}>{patientError}</Text>
+        <TouchableOpacity style={styles.retryButton} onPress={refreshPatient}>
+          <Text style={styles.retryText}>Try again</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.screen}>
@@ -59,5 +76,32 @@ const styles = StyleSheet.create({
     backgroundColor: '#F7F3E8',
     justifyContent: 'center',
     alignItems: 'center',
+    paddingHorizontal: 28,
+  },
+  errorTitle: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 20,
+    color: '#243642',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  errorText: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#7A8A8E',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  retryButton: {
+    backgroundColor: '#6F9FB5',
+    borderRadius: 8,
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+  },
+  retryText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 15,
+    color: '#FFFFFF',
   },
 });

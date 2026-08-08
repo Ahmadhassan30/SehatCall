@@ -45,6 +45,22 @@ async function getAuthCookieHeader(): Promise<string | null> {
   }
 }
 
+/** Build a protected media source for native players that do not use fetch(). */
+export async function authenticatedMediaSource(
+  baseUrl: string,
+  path: string
+): Promise<{ uri: string; headers?: Record<string, string> }> {
+  if (!baseUrl) {
+    throw new Error("Backend URL not configured. Check Settings.");
+  }
+
+  const cookie = await getAuthCookieHeader();
+  return {
+    uri: `${baseUrl}${path}`,
+    ...(cookie ? { headers: { Cookie: cookie } } : {}),
+  };
+}
+
 /**
  * Authenticated fetch.
  *

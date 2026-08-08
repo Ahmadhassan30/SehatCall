@@ -301,19 +301,26 @@ async def dispatch_call_via_uplift(
     if not patient.get("phone_verified_at"):
         raise ValueError(f"Patient {patient_id!r} has an unverified phone number.")
 
-    # Each patient dials through their own assistant, which already carries their
-    # chosen voice — so there is no voice PATCH in the dispatch path to race on.
+    # Correct drift before selecting the assistant. If an old TTS-only update
+    # damaged the remote assistant, this clears its local reference so the same
+    # dispatch can replace it safely below.
+    await ensure_preferred_voice(patient_id)
+    patient = dawa_store.get_patient(patient_id) or patient
+
+    # Each patient dials through their own assistant, created with their chosen
+    # voice already baked in.
+    previous_assistant_id = patient.get("assistant_id")
     assistant_id = await uplift_service.get_or_create_patient_assistant(patient)
+    if assistant_id != previous_assistant_id:
+        desired_voice = patient.get("preferred_voice_id")
+        if desired_voice and voice_catalog.is_valid_voice(desired_voice):
+            _applied_voice_id[patient_id] = desired_voice
 
     # Build verified call context (P1 path — unchanged)
     ctx = build_call_context(patient_id, medication_id)
 
     # Deterministic idempotency key prevents duplicate calls for same dose+attempt
     idempotency_key = f"{event_id}:attempt:{retry_count}"
-
-    # Correct any drift between the saved preference and the remote assistant.
-    # Safe to do per patient: it only ever touches this patient's own assistant.
-    await ensure_preferred_voice(patient_id)
 
     # Mark as calling BEFORE the network hop so the UI updates immediately
     dawa_store.update_dose_event(event_id, call_status="calling")
@@ -861,10 +868,22 @@ async def ensure_preferred_voice(patient_id: str) -> str | None:
             "DAWA_VOICE_SYNCED patient=%s voiceId=%s", patient_id, desired
         )
     except Exception as exc:
-        # A voice mismatch must never block a medication reminder — the call
-        # still goes out, just in the assistant's current voice.
-        logger.warning(
-            "DAWA_VOICE_SYNC_FAILED patient=%s voiceId=%s error=%s",
-            patient_id, desired, exc,
-        )
+        if getattr(exc, "dawa_code", None) == "UPLIFT_ASSISTANT_INCOMPLETE":
+            # A historical TTS-only update may have replaced the complete
+            # remote config. Keep that resource untouched; dropping only the
+            # local reference lets this dispatch create a clean replacement.
+            dawa_store.set_patient_assistant_id(patient_id, None)
+            reset_voice_cache(patient_id)
+            logger.warning(
+                "DAWA_VOICE_SYNC_REQUIRES_REPLACEMENT patient=%s error=%s",
+                patient_id,
+                getattr(exc, "detail", str(exc)),
+            )
+        else:
+            # A voice mismatch must never block a medication reminder — the
+            # call still goes out, just in the assistant's current voice.
+            logger.warning(
+                "DAWA_VOICE_SYNC_FAILED patient=%s voiceId=%s error=%s",
+                patient_id, desired, exc,
+            )
     return desired

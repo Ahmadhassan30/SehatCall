@@ -2,7 +2,7 @@
 """
 DAWA P0-B bootstrap script — create the Uplift Urdu medication-reminder assistant.
 
-Run ONCE to create the assistant. Do NOT run on every server start.
+Run ONCE to create and validate the assistant. Do NOT run on every server start.
 Does NOT place a call.
 
 Usage:
@@ -11,9 +11,9 @@ Usage:
                                               [--medication "دوائی کا نام"]
 
 Profiles:
-    hackathon  (default) — original stack: Soniox stt-rt-v4 + Gemini 2.5 Flash,
+    hackathon            — original stack: Soniox stt-rt-v4 + Gemini 2.5 Flash,
                            medication-specific legacy prompt.
-    voice-v2             — DAWA Voice V2: Groq whisper-large-v3 (ur) STT +
+    voice-v2 (default)   — DAWA Voice V2: Groq whisper-large-v3 (ur) STT +
                            Groq openai/gpt-oss-120b LLM + UpliftAI TTS
                            (helpdesk-agent, unchanged), 600s session TTL,
                            generic closed-world short-turn base prompt.
@@ -42,7 +42,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 async def main(medication_name: str, profile: str) -> None:
     # Import after path adjustment
-    from app.services.uplift import ASSISTANT_PROFILES, create_assistant  # noqa: PLC0415
+    from app.services.uplift import (  # noqa: PLC0415
+        ASSISTANT_PROFILES,
+        assistant_configuration_issues,
+        create_assistant,
+        get_assistant_configuration,
+    )
 
     spec = ASSISTANT_PROFILES[profile]
 
@@ -77,22 +82,38 @@ async def main(medication_name: str, profile: str) -> None:
     assistant_id = result.get("realtimeAssistantId")
     if not assistant_id:
         print(
-            f"ERROR: Unexpected response — realtimeAssistantId not found.\nFull response: {result}",
+            "ERROR: Unexpected response - realtimeAssistantId not found.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    print("✓ Assistant created successfully.")
+    print("Validating the persisted Uplift configuration...")
+    try:
+        persisted = await get_assistant_configuration(str(assistant_id))
+    except Exception as exc:  # pragma: no cover
+        print(f"ERROR: Assistant validation failed.\n{exc}", file=sys.stderr)
+        sys.exit(1)
+
+    issues = assistant_configuration_issues(persisted)
+    if issues:
+        print(
+            "ERROR: Uplift persisted an incomplete assistant. Missing: "
+            + ", ".join(issues),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print("Assistant created and validated successfully.")
     print()
     print(f"  realtimeAssistantId: {assistant_id}")
     print()
     print("=" * 60)
-    print("NEXT STEP — Save this ID as a Replit Secret:")
+    print("NEXT STEP - Save this ID in the repository root .env.local file:")
     print()
     print("  Key  : UPLIFT_ASSISTANT_ID")
     print(f"  Value: {assistant_id}")
     print()
-    print("Then restart the FastAPI workflow so it picks up the new secret.")
+    print("Then restart the local FastAPI backend so it picks up the new value.")
     print("=" * 60)
     print()
     print("NOTE: The assistant instructions will be updated automatically with the")
@@ -103,10 +124,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create the DAWA Uplift Urdu assistant.")
     parser.add_argument(
         "--profile",
-        default="hackathon",
+        default="voice-v2",
         choices=["hackathon", "voice-v2"],
         help="Assistant profile to create. 'voice-v2' uses the Groq stack and the "
-             "hardened closed-world prompt. Default: hackathon",
+             "hardened closed-world prompt. Default: voice-v2",
     )
     parser.add_argument(
         "--medication",

@@ -103,6 +103,19 @@ pnpm install --frozen-lockfile
 
 The Python source of truth is the root `pyproject.toml` plus `uv.lock`. Do not use `backend/requirements.txt` as the primary install path; it is not the complete current backend dependency set.
 
+Create the Uplift Voice V2 assistant once after configuring `UPLIFTAI_API_KEY`:
+
+```bash
+cd /home/ahmadhassan/Desktop/Playground/Dawa
+set -a
+source .env.local
+set +a
+cd backend
+uv run --project .. python scripts/create_uplift_assistant.py
+```
+
+The command does not place a phone call. It creates the assistant, verifies that Uplift persisted its agent/STT/TTS/LLM configuration, and prints the new ID. Put that ID in the root `.env.local` as `UPLIFT_ASSISTANT_ID`, then restart FastAPI.
+
 ---
 
 ## Environment Files

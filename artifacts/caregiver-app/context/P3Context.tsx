@@ -5,6 +5,7 @@
  * developer tools in DawaContext remain untouched.
  */
 import { apiFetch } from '@/lib/api';
+import { authClient } from '@/lib/auth-client';
 import React, {
   createContext,
   useCallback,
@@ -118,6 +119,8 @@ interface P3ContextValue {
   // Patient
   patient: P3Patient | null;
   patientLoading: boolean;
+  /** True after the current authenticated user's patient lookup has finished. */
+  patientReady: boolean;
   patientError: string | null;
   refreshPatient: () => Promise<void>;
   updatePatient: (
@@ -169,11 +172,17 @@ const P3Context = createContext<P3ContextValue | null>(null);
 
 export function P3Provider({ children }: { children: React.ReactNode }) {
   const { apiBaseUrl } = useDawa();
+  const { data: session, isPending: sessionPending } = authClient.useSession();
+  const sessionUserId = session?.user?.id ?? null;
 
   // Patient
   const [patient, setPatient] = useState<P3Patient | null>(null);
   const [patientLoading, setPatientLoading] = useState(false);
+  const [patientLoadedForUserId, setPatientLoadedForUserId] = useState<string | null>(null);
   const [patientError, setPatientError] = useState<string | null>(null);
+  const patientReady = Boolean(
+    sessionUserId && patientLoadedForUserId === sessionUserId
+  );
 
   // Medications
   const [medications, setMedications] = useState<P3Medication[]>([]);
@@ -240,7 +249,13 @@ export function P3Provider({ children }: { children: React.ReactNode }) {
       const data = await api('/api/dawa/patient');
       setPatient(data as P3Patient);
     } catch (e) {
-      setPatientError(e instanceof Error ? e.message : 'Failed to load patient');
+      const message = e instanceof Error ? e.message : 'Failed to load patient';
+      if (message.startsWith('No patient set up for this caregiver yet.')) {
+        setPatient(null);
+        setPatientError(null);
+      } else {
+        setPatientError(message);
+      }
     } finally {
       setPatientLoading(false);
     }
@@ -453,16 +468,61 @@ export function P3Provider({ children }: { children: React.ReactNode }) {
   // ── Boot load ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!apiBaseUrl) return;
-    refreshPatient();
+    if (sessionPending) return;
+
+    if (!apiBaseUrl || !sessionUserId) {
+      setPatient(null);
+      setPatientLoadedForUserId(null);
+      setMedications([]);
+      setNextCall(null);
+      setCalls([]);
+      setVoices([]);
+      setSelectedVoiceId(null);
+      return;
+    }
+
+    let active = true;
+    setPatient(null);
+    setPatientLoadedForUserId(null);
+    setPatientLoading(true);
+    setPatientError(null);
+
+    const loadPatientForSession = async () => {
+      try {
+        const data = await api('/api/dawa/patient');
+        if (active) setPatient(data as P3Patient);
+      } catch (e) {
+        if (active) {
+          const message = e instanceof Error ? e.message : 'Failed to load patient';
+          // A 404 is the expected first-run state. Connectivity/auth failures
+          // are different: routing must not mislabel them as missing setup.
+          setPatientError(
+            message.startsWith('No patient set up for this caregiver yet.')
+              ? null
+              : message
+          );
+        }
+      } finally {
+        if (active) {
+          setPatientLoading(false);
+          setPatientLoadedForUserId(sessionUserId);
+        }
+      }
+    };
+
+    loadPatientForSession();
     refreshMedications();
     refreshNextCall();
     refreshCalls();
     refreshVoices();
-  }, [apiBaseUrl]);
+
+    return () => {
+      active = false;
+    };
+  }, [apiBaseUrl, sessionPending, sessionUserId]);
 
   const value: P3ContextValue = {
-    patient, patientLoading, patientError, refreshPatient, updatePatient,
+    patient, patientLoading, patientReady, patientError, refreshPatient, updatePatient,
     createPatient, sendPhoneCode, verifyPhoneCode,
     medications, medicationsLoading, medicationsError, refreshMedications, createMedication, updateMedication, callMedicationNow,
     nextCall, nextCallLoading, refreshNextCall, secondsUntilNext,

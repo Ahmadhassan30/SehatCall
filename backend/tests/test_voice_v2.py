@@ -276,7 +276,7 @@ def test_29_voice_v2_tts_unchanged_from_production():
 
 def test_30_voice_v2_sets_session_ttl():
     from app.services.uplift import ASSISTANT_PROFILES
-    assert ASSISTANT_PROFILES["voice-v2"]["sessionTtlSec"] == 600
+    assert ASSISTANT_PROFILES["voice-v2"]["session"] == {"ttl": 600}
 
 
 def test_31_unknown_profile_is_rejected():
@@ -297,8 +297,10 @@ async def test_32_voice_v2_payload_shape_is_correct():
     assert cfg["stt"]["default"]["model"] == "whisper-large-v3"
     assert cfg["llm"]["default"]["model"] == "openai/gpt-oss-120b"
     assert cfg["tts"]["default"]["provider"] == "upliftai"
-    assert cfg["sessionTtlSec"] == 600
+    assert cfg["session"] == {"ttl": 600}
     assert "CLOSED WORLD" in cfg["agent"]["instructions"]
+    assert cfg["agent"]["tools"] == []
+    assert payload["public"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -394,4 +396,18 @@ async def test_33_hackathon_profile_is_unchanged():
     assert payload["name"] == "DAWA Urdu Medication Reminder"
     assert cfg["stt"]["default"]["provider"] == "soniox"
     assert cfg["llm"]["default"]["model"] == "gemini-2.5-flash"
-    assert "sessionTtlSec" not in cfg
+    assert "session" not in cfg
+
+
+def test_incomplete_persisted_assistant_is_detected_without_prompt_logging():
+    from app.services.uplift import assistant_configuration_issues
+
+    issues = assistant_configuration_issues(
+        {"config": {"tts": {"default": {"provider": "upliftai"}}}}
+    )
+
+    assert issues == [
+        "config.agent",
+        "config.stt.default",
+        "config.llm.default",
+    ]

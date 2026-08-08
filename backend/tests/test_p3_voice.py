@@ -5,7 +5,7 @@ Coverage:
    1-6   verified catalog integrity (no invented voice IDs)
    7-11  GET /voices
   12-19  PUT /patient/voice ordering, validation, rollback, 409 during a call
-  20-24  update_assistant_voice payload shape (TTS only, complete object)
+  20-24  update_assistant_voice preserves the complete assistant config
   25-28  preview endpoint (fixed phrase, server-side key, caching)
   29-30  ensure_preferred_voice drift guard
 
@@ -64,6 +64,20 @@ def _ok_response(content: bytes = b"", status: int = 200):
     r.content = content
     r.json.return_value = {}
     r.text = ""
+    return r
+
+
+def _configured_assistant_response():
+    r = _ok_response()
+    r.json.return_value = {
+        "config": {
+            "agent": {"instructions": "safe-test-prompt", "tools": []},
+            "stt": {"default": {"provider": "groq", "model": "whisper-large-v3"}},
+            "tts": {"default": {"provider": "upliftai", "voiceId": "helpdesk-agent"}},
+            "llm": {"default": {"provider": "groq", "model": "test-model"}},
+            "session": {"ttl": 600},
+        }
+    }
     return r
 
 
@@ -183,6 +197,32 @@ def test_12b_set_voice_before_the_patient_has_an_assistant(client, assistant_id)
     assert get_patient(DEMO_PATIENT_ID)["preferred_voice_id"] == "v_yypgzenx"
 
 
+@pytest.mark.asyncio
+async def test_12c_set_voice_repairs_a_historically_incomplete_assistant(assistant_id):
+    """Save the choice and replace the damaged assistant on the next call."""
+    from app.api.dawa import VoiceSelection, set_patient_voice_endpoint
+    from app.services import dawa_store, uplift
+    from tests.conftest import TEST_CAREGIVER_ID
+
+    with patch(
+        "app.services.uplift.update_assistant_voice",
+        new=AsyncMock(
+            side_effect=uplift.IncompleteAssistantConfiguration(
+                ["config.agent", "config.stt.default", "config.llm.default"]
+            )
+        ),
+    ):
+        response = await set_patient_voice_endpoint(
+            VoiceSelection(voiceId="v_yypgzenx"),
+            caregiver_id=TEST_CAREGIVER_ID,
+        )
+
+    patient = dawa_store.get_patient("razia-bibi")
+    assert response["preferredVoiceId"] == "v_yypgzenx"
+    assert patient["preferred_voice_id"] == "v_yypgzenx"
+    assert patient["assistant_id"] is None
+
+
 def test_13_set_voice_rejects_unknown_id(client):
     with patch("app.services.uplift.update_assistant_voice", new=AsyncMock()) as upd:
         r = client.put("/api/dawa/patient/voice", json={"voiceId": "not-a-voice"})
@@ -248,6 +288,7 @@ async def test_20_update_sends_complete_tts_default_object(assistant_id):
     from app.services import uplift
     with patch.object(uplift, "httpx") as httpx_mod:
         cli = httpx_mod.AsyncClient.return_value.__aenter__.return_value
+        cli.get = AsyncMock(return_value=_configured_assistant_response())
         cli.post = AsyncMock(return_value=_ok_response())
         await uplift.update_assistant_voice("v_yypgzenx")
         payload = cli.post.call_args.kwargs["json"]
@@ -258,18 +299,20 @@ async def test_20_update_sends_complete_tts_default_object(assistant_id):
 
 
 @pytest.mark.asyncio
-async def test_21_update_touches_only_tts(assistant_id):
-    """Agent instructions / STT / LLM / session config must be left alone."""
+async def test_21_update_preserves_non_tts_config(assistant_id):
+    """Replacement semantics must not erase agent, STT, LLM, or session config."""
     from app.services import uplift
     with patch.object(uplift, "httpx") as httpx_mod:
         cli = httpx_mod.AsyncClient.return_value.__aenter__.return_value
+        cli.get = AsyncMock(return_value=_configured_assistant_response())
         cli.post = AsyncMock(return_value=_ok_response())
         await uplift.update_assistant_voice("v_yypgzenx")
         payload = cli.post.call_args.kwargs["json"]
-    assert set(payload["config"].keys()) == {"tts"}
-    for forbidden in ("agent", "stt", "llm", "session", "instructions", "greeting"):
-        assert forbidden not in payload
-        assert forbidden not in payload["config"]
+    assert set(payload["config"].keys()) == {"agent", "stt", "tts", "llm", "session"}
+    assert payload["config"]["agent"]["instructions"] == "safe-test-prompt"
+    assert payload["config"]["stt"]["default"]["provider"] == "groq"
+    assert payload["config"]["llm"]["default"]["provider"] == "groq"
+    assert payload["config"]["session"] == {"ttl": 600}
 
 
 @pytest.mark.asyncio
@@ -277,6 +320,7 @@ async def test_22_update_uses_documented_post_endpoint(assistant_id):
     from app.services import uplift
     with patch.object(uplift, "httpx") as httpx_mod:
         cli = httpx_mod.AsyncClient.return_value.__aenter__.return_value
+        cli.get = AsyncMock(return_value=_configured_assistant_response())
         cli.post = AsyncMock(return_value=_ok_response())
         await uplift.update_assistant_voice("v_yypgzenx")
         url = cli.post.call_args.args[0]
@@ -303,6 +347,23 @@ async def test_24_update_requires_a_configured_assistant(monkeypatch):
     assert exc.value.status_code == 503
 
 
+@pytest.mark.asyncio
+async def test_24b_update_rejects_incomplete_assistant_without_overwriting_it(assistant_id):
+    from app.services import uplift
+
+    incomplete = _ok_response()
+    incomplete.json.return_value = {
+        "config": {"tts": {"default": {"provider": "upliftai"}}}
+    }
+    with patch.object(uplift, "httpx") as httpx_mod:
+        cli = httpx_mod.AsyncClient.return_value.__aenter__.return_value
+        cli.get = AsyncMock(return_value=incomplete)
+        cli.post = AsyncMock(return_value=_ok_response())
+        with pytest.raises(uplift.IncompleteAssistantConfiguration):
+            await uplift.update_assistant_voice("v_yypgzenx")
+        cli.post.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # 25-28  Preview
 # ---------------------------------------------------------------------------
@@ -320,6 +381,17 @@ async def test_25_preview_uses_a_fixed_server_side_phrase():
     assert payload["text"] == voice_catalog.PREVIEW_PHRASE
     assert payload["voiceId"] == "v_yypgzenx"
     assert url.endswith("/synthesis/text-to-speech")
+
+
+def test_25b_preview_route_supports_native_audio_get_requests():
+    from app.api.dawa import router
+
+    methods = set()
+    for route in router.routes:
+        if getattr(route, "path", "").endswith("/voices/{voice_id}/preview"):
+            methods.update(getattr(route, "methods", set()))
+
+    assert {"GET", "POST"}.issubset(methods)
 
 
 def test_26_preview_endpoint_returns_audio(client, tmp_path, monkeypatch):
@@ -376,3 +448,22 @@ async def test_30_voice_sync_failure_never_blocks_the_reminder(assistant_id):
                       new=AsyncMock(side_effect=RuntimeError("uplift down"))):
         result = await sched.ensure_preferred_voice("razia-bibi")  # must not raise
     assert result == "v_yypgzenx"
+
+
+@pytest.mark.asyncio
+async def test_30b_incomplete_assistant_is_uncached_for_replacement(assistant_id):
+    from app.services import dawa_store, scheduler as sched, uplift
+
+    with patch.object(
+        sched.uplift_service,
+        "update_assistant_voice",
+        new=AsyncMock(
+            side_effect=uplift.IncompleteAssistantConfiguration(
+                ["config.agent", "config.stt.default", "config.llm.default"]
+            )
+        ),
+    ):
+        result = await sched.ensure_preferred_voice("razia-bibi")
+
+    assert result == dawa_store.get_patient("razia-bibi")["preferred_voice_id"]
+    assert dawa_store.get_patient("razia-bibi")["assistant_id"] is None
