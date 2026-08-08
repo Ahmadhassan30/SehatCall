@@ -27,6 +27,9 @@ node_modules
 !.vscode/launch.json
 !.vscode/extensions.json
 
+# DAWA runtime database — created automatically on first boot; never commit
+backend/data/calls.db
+
 # misc
 /.sass-cache
 /connect.lock
