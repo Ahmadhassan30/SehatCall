@@ -61,12 +61,16 @@ def _make_p1_client(
     import importlib
     import app.config as cfg_mod
     import app.services.uplift as svc_mod
+    import app.services.call_context as ctx_mod
+    import app.services.scheduler as sched_mod
     import app.api.test_call as api_mod
     import app.api.dawa as dawa_api_mod
     import app.main as main_mod
 
     importlib.reload(cfg_mod)
     importlib.reload(svc_mod)
+    importlib.reload(ctx_mod)
+    importlib.reload(sched_mod)
     importlib.reload(api_mod)
     importlib.reload(dawa_api_mod)
     importlib.reload(main_mod)
@@ -206,7 +210,7 @@ def test_patient_nickname_is_separate_from_clinical_name():
 # 12–15  demo-call endpoint behaviour
 # ---------------------------------------------------------------------------
 
-@patch("app.api.dawa.httpx.AsyncClient")
+@patch("app.services.scheduler.httpx.AsyncClient")
 def test_variables_within_documented_size_limit(mock_client_class, monkeypatch):
     """variables JSON must stay under 3000 chars (documented Uplift limit)."""
     mock_client_class.return_value = _mock_uplift_call()
@@ -223,7 +227,7 @@ def test_variables_within_documented_size_limit(mock_client_class, monkeypatch):
     assert size <= 3000, f"variables JSON is {size} chars (limit 3000)"
 
 
-@patch("app.api.dawa.httpx.AsyncClient")
+@patch("app.services.scheduler.httpx.AsyncClient")
 def test_instructions_within_documented_size_limit(mock_client_class, monkeypatch):
     """additionalInstructions must stay under 2000 chars (documented Uplift limit)."""
     mock_client_class.return_value = _mock_uplift_call()
@@ -234,7 +238,7 @@ def test_instructions_within_documented_size_limit(mock_client_class, monkeypatc
     assert size <= 2000, f"additionalInstructions is {size} chars (limit 2000)"
 
 
-@patch("app.api.dawa.httpx.AsyncClient")
+@patch("app.services.scheduler.httpx.AsyncClient")
 def test_demo_call_uses_uplift_assistant_id_not_request(mock_client_class, monkeypatch):
     """
     demo-call must use UPLIFT_ASSISTANT_ID from server settings.
@@ -264,7 +268,7 @@ def test_demo_call_uses_uplift_assistant_id_not_request(mock_client_class, monke
     assert captured.get("assistantId") == "asst-p1-test-123"
 
 
-@patch("app.api.dawa.httpx.AsyncClient")
+@patch("app.services.scheduler.httpx.AsyncClient")
 def test_demo_call_uses_test_phone_number_not_request(mock_client_class, monkeypatch):
     """
     demo-call must always use TEST_PHONE_NUMBER from server settings.
@@ -294,7 +298,7 @@ def test_demo_call_uses_test_phone_number_not_request(mock_client_class, monkeyp
     assert captured.get("to") == "+923001234567"
 
 
-@patch("app.api.dawa.httpx.AsyncClient")
+@patch("app.services.scheduler.httpx.AsyncClient")
 def test_demo_call_has_idempotency_key_header(mock_client_class, monkeypatch):
     """Every Uplift /calls POST must include an Idempotency-Key header."""
     captured_headers: dict = {}

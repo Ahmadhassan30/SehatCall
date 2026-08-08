@@ -1,14 +1,15 @@
 /**
- * DawaContext — P1 state management for the DAWA caregiver app.
+ * DawaContext — P1+P2 state management for the DAWA caregiver app.
  *
- * Replaces the P0-B CallContext.  All API calls use the new P1 endpoints:
- *   GET  /api/dawa/demo          — patient + medications on mount
+ * P1 endpoints:
+ *   GET  /api/dawa/demo          — patient + medications + scheduler state
  *   POST /api/dawa/vmr/resolve   — deterministic medication ID from visual cues
- *   POST /api/dawa/demo-call     — dispatch a verified Uplift call
+ *   POST /api/dawa/demo-call     — dispatch a verified Uplift call (manual)
  *   GET  /api/dawa/call-status   — dose events + live telephony status
  *
- * No admin token is required — P1 demo endpoints are open for the hackathon.
- * Phone number is always read from TEST_PHONE_NUMBER on the server.
+ * P2 endpoints (new):
+ *   POST /api/dawa/schedule-demo-call — schedule a proactive call (15–300 s delay)
+ *   POST /api/dawa/demo/reset         — clear demo state; preserve patient data
  */
 
 import React, {
@@ -52,6 +53,7 @@ export interface DoseEvent {
   callId: string | null;
   callStatus: string;
   adherenceOutcome: string | null;
+  retryCount?: number;
   createdAt: string;
   updatedAt: string;
   liveStatus?: {
@@ -66,6 +68,14 @@ export interface DoseEvent {
     startedAt?: string | null;
     endedAt?: string | null;
   } | null;
+}
+
+export interface ScheduledCallInfo {
+  doseEventId: string;
+  medicationId: string;
+  scheduledTime: string;
+  callStatus: string;
+  delayRemainingSeconds: number | null;
 }
 
 export type VMRStatus = 'UNIQUE' | 'AMBIGUOUS' | 'NO_MATCH';
@@ -107,13 +117,25 @@ interface DawaContextValue {
   vmrLoading: boolean;
   runVmr: () => Promise<void>;
 
-  // Call state
+  // Call state (manual)
   callPhase: CallPhase;
   activeCallId: string | null;
   activeDoseEventId: string | null;
   recentDoseEvents: DoseEvent[];
   dispatchCall: (patientId: string, medicationId: string) => Promise<void>;
   callError: string | null;
+
+  // P2 — proactive scheduling
+  scheduledCall: ScheduledCallInfo | null;
+  countdownSeconds: number | null;
+  isScheduling: boolean;
+  scheduleDemo: (medicationId: string, delaySeconds: number) => Promise<void>;
+  scheduleError: string | null;
+
+  // P2 — demo reset
+  isResetting: boolean;
+  resetDemo: () => Promise<void>;
+  resetError: string | null;
 }
 
 // ─── Context ─────────────────────────────────────────────────────────────────
@@ -123,12 +145,8 @@ const DawaContext = createContext<DawaContextValue | null>(null);
 const STORAGE_KEY_URL = 'dawa_api_url';
 
 function deriveDefaultUrl(): string {
-  // In Replit dev, EXPO_PUBLIC_DOMAIN is set to $REPLIT_DEV_DOMAIN
-  // The api-server proxy is accessible at that domain (path /api/*)
   const domain = process.env['EXPO_PUBLIC_DOMAIN'];
-  if (domain) {
-    return `https://${domain}`;
-  }
+  if (domain) return `https://${domain}`;
   return '';
 }
 
@@ -151,15 +169,24 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
   const [recentDoseEvents, setRecentDoseEvents] = useState<DoseEvent[]>([]);
   const [callError, setCallError] = useState<string | null>(null);
 
+  // P2 scheduling state
+  const [scheduledCall, setScheduledCall] = useState<ScheduledCallInfo | null>(null);
+  const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
+  const [isScheduling, setIsScheduling] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+
+  // P2 reset state
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Persist URL ──────────────────────────────────────────────────────────
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY_URL).then((stored) => {
-      if (stored && stored.trim()) {
-        setApiBaseUrlState(stored.trim());
-      }
+      if (stored && stored.trim()) setApiBaseUrlState(stored.trim());
     });
   }, []);
 
@@ -168,6 +195,31 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
     setApiBaseUrlState(trimmed);
     await AsyncStorage.setItem(STORAGE_KEY_URL, trimmed);
   }, []);
+
+  // ── Countdown timer ──────────────────────────────────────────────────────
+
+  function startCountdown(seconds: number) {
+    stopCountdown();
+    setCountdownSeconds(seconds);
+    countdownRef.current = setInterval(() => {
+      setCountdownSeconds((prev) => {
+        if (prev === null || prev <= 1) {
+          stopCountdown();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }
+
+  function stopCountdown() {
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+  }
+
+  useEffect(() => () => stopCountdown(), []);
 
   // ── Load demo data ───────────────────────────────────────────────────────
 
@@ -182,6 +234,22 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
       setPatient(data.patient ?? null);
       setMedications(data.medications ?? []);
       setRecentDoseEvents(data.doseEvents ?? []);
+
+      // P2: pick up scheduled call state from demo endpoint
+      if (data.nextScheduledCall) {
+        const sc: ScheduledCallInfo = data.nextScheduledCall;
+        setScheduledCall(sc);
+        // Restore cosmetic countdown if delay is still positive
+        if (
+          typeof sc.delayRemainingSeconds === 'number' &&
+          sc.delayRemainingSeconds > 0 &&
+          countdownRef.current === null
+        ) {
+          startCountdown(sc.delayRemainingSeconds);
+        }
+      } else {
+        setScheduledCall(null);
+      }
     } catch (err: unknown) {
       setLoadError(err instanceof Error ? err.message : 'Failed to connect to DAWA backend');
     } finally {
@@ -189,15 +257,13 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
     }
   }, [apiBaseUrl]);
 
-  useEffect(() => {
-    loadDemo();
-  }, [loadDemo]);
+  useEffect(() => { loadDemo(); }, [loadDemo]);
 
   // ── VMR ──────────────────────────────────────────────────────────────────
 
   const addVmrCue = useCallback((key: string, value: string) => {
     setVmrCues((prev) => ({ ...prev, [key]: value }));
-    setVmrResult(null); // reset on cue change
+    setVmrResult(null);
   }, []);
 
   const clearVmrCues = useCallback(() => {
@@ -223,11 +289,8 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
     }
   }, [apiBaseUrl, patient, vmrCues]);
 
-  // Re-run VMR automatically when cues change
   useEffect(() => {
-    if (Object.keys(vmrCues).length > 0 && patient) {
-      runVmr();
-    }
+    if (Object.keys(vmrCues).length > 0 && patient) runVmr();
   }, [vmrCues, patient, runVmr]);
 
   // ── Poll call status ──────────────────────────────────────────────────────
@@ -235,28 +298,40 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
   const pollCallStatus = useCallback(async () => {
     if (!apiBaseUrl) return;
     try {
-      const res = await fetch(`${apiBaseUrl}/api/dawa/call-status?limit=5`);
+      const res = await fetch(`${apiBaseUrl}/api/dawa/call-status?limit=10`);
       if (!res.ok) return;
       const data = await res.json();
       const events: DoseEvent[] = data.doseEvents ?? [];
       setRecentDoseEvents(events);
 
-      // Update callPhase from the active event
+      // Update callPhase from active manual-dispatch event
       if (activeDoseEventId) {
         const active = events.find((e) => e.id === activeDoseEventId);
         if (active) {
           const phase = derivePhase(active);
           setCallPhase(phase);
           if (active.callId) setActiveCallId(active.callId);
-          if (phase === 'completed' || phase === 'failed') {
-            stopPolling();
+          if (phase === 'completed' || phase === 'failed') stopPolling();
+        }
+      }
+
+      // Update scheduledCall status when backend transitions it
+      if (scheduledCall) {
+        const ev = events.find((e) => e.id === scheduledCall.doseEventId);
+        if (ev) {
+          setScheduledCall((prev) =>
+            prev ? { ...prev, callStatus: ev.callStatus } : prev
+          );
+          // If the scheduled event has moved to a terminal state, stop countdown
+          if (['completed', 'failed', 'calling', 'dispatched', 'dialing', 'ringing', 'answered'].includes(ev.callStatus)) {
+            stopCountdown();
           }
         }
       }
     } catch {
       // Silently ignore poll failures
     }
-  }, [apiBaseUrl, activeDoseEventId]);
+  }, [apiBaseUrl, activeDoseEventId, scheduledCall]);
 
   function stopPolling() {
     if (pollRef.current) {
@@ -265,24 +340,32 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  useEffect(() => {
-    return () => stopPolling();
-  }, []);
+  useEffect(() => () => stopPolling(), []);
 
-  // ── Dispatch call ────────────────────────────────────────────────────────
+  // Start polling as long as there's a scheduled or active event
+  useEffect(() => {
+    const hasActivity =
+      (callPhase !== 'idle' && callPhase !== 'completed' && callPhase !== 'failed') ||
+      (scheduledCall !== null &&
+        !['completed', 'failed'].includes(scheduledCall.callStatus));
+
+    if (hasActivity && !pollRef.current) {
+      pollRef.current = setInterval(pollCallStatus, 3000);
+    } else if (!hasActivity && pollRef.current) {
+      stopPolling();
+    }
+  }, [callPhase, scheduledCall, pollCallStatus]);
+
+  // ── Dispatch call (manual) ────────────────────────────────────────────────
 
   const dispatchCall = useCallback(
     async (patientId: string, medicationId: string) => {
-      if (!apiBaseUrl) {
-        setCallError('API URL not configured. Open settings.');
-        return;
-      }
+      if (!apiBaseUrl) { setCallError('API URL not configured. Open settings.'); return; }
       setCallPhase('dispatching');
       setCallError(null);
       setActiveCallId(null);
       setActiveDoseEventId(null);
       stopPolling();
-
       try {
         const res = await fetch(`${apiBaseUrl}/api/dawa/demo-call`, {
           method: 'POST',
@@ -290,13 +373,10 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
           body: JSON.stringify({ patientId, medicationId }),
         });
         const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.detail ?? `Call dispatch failed (${res.status})`);
-        }
+        if (!res.ok) throw new Error(data.detail ?? `Call dispatch failed (${res.status})`);
         setActiveCallId(data.callId ?? null);
         setActiveDoseEventId(data.doseEventId ?? null);
         setCallPhase('dispatched');
-        // Start polling every 3 s
         pollRef.current = setInterval(pollCallStatus, 3000);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -307,26 +387,90 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
     [apiBaseUrl, pollCallStatus]
   );
 
+  // ── P2: Schedule demo call ────────────────────────────────────────────────
+
+  const scheduleDemo = useCallback(
+    async (medicationId: string, delaySeconds: number) => {
+      if (!apiBaseUrl) { setScheduleError('API URL not configured. Open settings.'); return; }
+      setIsScheduling(true);
+      setScheduleError(null);
+      try {
+        const res = await fetch(`${apiBaseUrl}/api/dawa/schedule-demo-call`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            patientId: 'razia-bibi',
+            medicationId,
+            delaySeconds,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? `Scheduling failed (${res.status})`);
+
+        setScheduledCall({
+          doseEventId:  data.doseEventId,
+          medicationId: data.medicationId,
+          scheduledTime: data.scheduledTime,
+          callStatus:   'scheduled',
+          delayRemainingSeconds: data.delaySeconds,
+        });
+
+        startCountdown(data.delaySeconds);
+
+        // Start polling to track state transitions
+        if (!pollRef.current) {
+          pollRef.current = setInterval(pollCallStatus, 3000);
+        }
+      } catch (err: unknown) {
+        setScheduleError(err instanceof Error ? err.message : 'Failed to schedule call');
+      } finally {
+        setIsScheduling(false);
+      }
+    },
+    [apiBaseUrl, pollCallStatus]
+  );
+
+  // ── P2: Reset demo ────────────────────────────────────────────────────────
+
+  const resetDemo = useCallback(async () => {
+    if (!apiBaseUrl) { setResetError('API URL not configured. Open settings.'); return; }
+    setIsResetting(true);
+    setResetError(null);
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/dawa/demo/reset`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? `Reset failed (${res.status})`);
+
+      // Clear all call state
+      setScheduledCall(null);
+      setCountdownSeconds(null);
+      stopCountdown();
+      stopPolling();
+      setCallPhase('idle');
+      setActiveCallId(null);
+      setActiveDoseEventId(null);
+      setCallError(null);
+
+      // Reload fresh data
+      await loadDemo();
+    } catch (err: unknown) {
+      setResetError(err instanceof Error ? err.message : 'Reset failed');
+    } finally {
+      setIsResetting(false);
+    }
+  }, [apiBaseUrl, loadDemo]);
+
+  // ── Value ─────────────────────────────────────────────────────────────────
+
   const value: DawaContextValue = {
-    apiBaseUrl,
-    setApiBaseUrl,
-    patient,
-    medications,
-    isLoading,
-    loadError,
-    refresh: loadDemo,
-    vmrCues,
-    addVmrCue,
-    clearVmrCues,
-    vmrResult,
-    vmrLoading,
-    runVmr,
-    callPhase,
-    activeCallId,
-    activeDoseEventId,
-    recentDoseEvents,
-    dispatchCall,
-    callError,
+    apiBaseUrl, setApiBaseUrl,
+    patient, medications, isLoading, loadError, refresh: loadDemo,
+    vmrCues, addVmrCue, clearVmrCues, vmrResult, vmrLoading, runVmr,
+    callPhase, activeCallId, activeDoseEventId, recentDoseEvents,
+    dispatchCall, callError,
+    // P2
+    scheduledCall, countdownSeconds, isScheduling, scheduleDemo, scheduleError,
+    isResetting, resetDemo, resetError,
   };
 
   return <DawaContext.Provider value={value}>{children}</DawaContext.Provider>;

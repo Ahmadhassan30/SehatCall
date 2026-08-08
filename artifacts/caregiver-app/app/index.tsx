@@ -1,8 +1,11 @@
 /**
- * DAWA P1 — Caregiver Dashboard
+ * DAWA P1+P2 — Caregiver Dashboard
  *
- * Shows Razia Bibi's medication schedule, a live call dispatch button,
- * an interactive VMR demo card, and a safety notice.
+ * P2 additions:
+ *   • "Schedule demo reminder" under the Metformin card (delay picker)
+ *   • Cosmetic countdown "DAWA will call Razia in X…"
+ *   • UPCOMING CALL lifecycle card (real backend state)
+ *   • Reset demo button in settings panel
  */
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -34,6 +37,8 @@ const C = {
   redLight:   '#FEE2E2',
   blue:       '#1D4ED8',
   blueLight:  '#DBEAFE',
+  purple:     '#7C3AED',
+  purpleLight:'#EDE9FE',
   bg:         '#F4F6F3',
   card:       '#FFFFFF',
   border:     '#E4E9E6',
@@ -44,7 +49,7 @@ const C = {
   urdu:       '#1B3A5C',
 };
 
-// ─── Phase → display mapping ──────────────────────────────────────────────────
+// ─── Phase → display ─────────────────────────────────────────────────────────
 const PHASE_LABEL: Record<string, string> = {
   idle:        'No active call',
   dispatching: 'Connecting…',
@@ -67,7 +72,39 @@ const PHASE_COLOR: Record<string, string> = {
   failed:      C.red,
 };
 
+// Dose event statuses that map to UI labels
+const STATUS_LABEL: Record<string, string> = {
+  scheduled:  'Scheduled',
+  due:        'Due',
+  calling:    'Calling',
+  dispatched: 'Dispatched',
+  dialing:    'Dialing',
+  ringing:    'Ringing',
+  answered:   'Answered',
+  completed:  'Completed',
+  failed:     'Failed',
+};
+
+const STATUS_COLOR: Record<string, string> = {
+  scheduled:  C.blue,
+  due:        C.orange,
+  calling:    C.orange,
+  dispatched: C.orange,
+  dialing:    C.orange,
+  ringing:    C.orange,
+  answered:   C.green,
+  completed:  C.textMid,
+  failed:     C.red,
+};
+
 const ACTIVE_PHASES = new Set(['dispatching', 'dispatched', 'dialing', 'ringing', 'answered']);
+
+// ─── Demo delay options ───────────────────────────────────────────────────────
+const DELAY_OPTIONS = [
+  { label: '30 seconds', value: 30 },
+  { label: '60 seconds', value: 60 },
+  { label: '2 minutes',  value: 120 },
+];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function formatScheduleTime(hhmm: string): string {
@@ -80,10 +117,31 @@ function formatScheduleTime(hhmm: string): string {
 
 function getMedicationIcon(med: Medication): string {
   const time = parseInt(med.schedule_time?.split(':')[0] ?? '0', 10);
-  if (time >= 5 && time < 12) return '🌅';
+  if (time >= 5  && time < 12) return '🌅';
   if (time >= 12 && time < 17) return '☀️';
   if (time >= 17 && time < 20) return '🌇';
   return '🌙';
+}
+
+function formatCountdown(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function friendlyFailureReason(reason?: string | null): string {
+  if (!reason) return 'Unknown issue';
+  const map: Record<string, string> = {
+    busy:           'Phone busy',
+    no_answer:      'No answer',
+    silent_pickup:  'No response after pickup',
+    voicemail:      'Went to voicemail',
+    network_error:  'Network issue',
+    unreachable:    'Phone unreachable',
+    declined:       'Call declined',
+    wrong_number:   'Wrong number',
+  };
+  return map[reason] ?? reason;
 }
 
 // ─── Pulsing dot ─────────────────────────────────────────────────────────────
@@ -100,14 +158,12 @@ function PulsingDot({ color }: { color: string }) {
     return () => anim.stop();
   }, [scale]);
   return (
-    <Animated.View
-      style={{
-        width: 8, height: 8, borderRadius: 4,
-        backgroundColor: color,
-        transform: [{ scale }],
-        marginRight: 6,
-      }}
-    />
+    <Animated.View style={{
+      width: 8, height: 8, borderRadius: 4,
+      backgroundColor: color,
+      transform: [{ scale }],
+      marginRight: 6,
+    }} />
   );
 }
 
@@ -119,18 +175,23 @@ export default function DawaScreen() {
     vmrCues, addVmrCue, clearVmrCues, vmrResult, vmrLoading,
     callPhase, activeCallId, recentDoseEvents,
     dispatchCall, callError,
+    // P2
+    scheduledCall, countdownSeconds, isScheduling, scheduleDemo, scheduleError,
+    isResetting, resetDemo, resetError,
   } = useDawa();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [urlDraft, setUrlDraft] = useState(apiBaseUrl);
 
+  // Demo scheduling
+  const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
+  const [selectedDelay, setSelectedDelay] = useState(60);
+
   // Auto-open settings if no API URL is configured
-  useEffect(() => {
-    if (!apiBaseUrl) setSettingsOpen(true);
-  }, []);
+  useEffect(() => { if (!apiBaseUrl) setSettingsOpen(true); }, []);
 
   // ── VMR demo logic ──────────────────────────────────────────────────────
-  const [vmrBoxColor, setVmrBoxColor]     = useState<string | null>(null);
+  const [vmrBoxColor, setVmrBoxColor]       = useState<string | null>(null);
   const [vmrStripeColor, setVmrStripeColor] = useState<string | null>(null);
 
   function handleVmrBoxColor(color: string) {
@@ -155,7 +216,7 @@ export default function DawaScreen() {
     clearVmrCues();
   }
 
-  // ── Dispatch handler ────────────────────────────────────────────────────
+  // ── Manual call handler ──────────────────────────────────────────────────
   function handleCallPress(med: Medication) {
     if (ACTIVE_PHASES.has(callPhase)) {
       Alert.alert('Call in progress', 'Wait for the current call to finish before placing another.');
@@ -171,8 +232,26 @@ export default function DawaScreen() {
     );
   }
 
+  // ── Schedule demo handler ────────────────────────────────────────────────
+  async function handleSchedulePress() {
+    setSchedulePickerOpen(false);
+    await scheduleDemo('metformin-500', selectedDelay);
+  }
+
+  // ── Reset handler ────────────────────────────────────────────────────────
+  async function handleReset() {
+    Alert.alert(
+      'Reset demo?',
+      'This will clear all call history and scheduled reminders. Razia's medication data will be preserved.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Reset', style: 'destructive', onPress: () => resetDemo() },
+      ]
+    );
+  }
+
   const isActiveCall = ACTIVE_PHASES.has(callPhase);
-  const phaseColor = PHASE_COLOR[callPhase] ?? C.textMuted;
+  const phaseColor   = PHASE_COLOR[callPhase] ?? C.textMuted;
 
   // ── VMR result display ──────────────────────────────────────────────────
   function renderVmrResult() {
@@ -192,11 +271,9 @@ export default function DawaScreen() {
       return (
         <View style={[styles.vmrResultBox, { backgroundColor: C.orangeLight, borderColor: C.orange }]}>
           <Text style={[styles.vmrResultTitle, { color: C.orange }]}>⚡ AMBIGUOUS</Text>
-          <Text style={styles.vmrResultBody}>
-            Two white boxes — can't tell apart yet.
-          </Text>
+          <Text style={styles.vmrResultBody}>Two white boxes — can't tell apart yet.</Text>
           {disc && (
-            <Text style={[styles.vmrResultHint]}>
+            <Text style={styles.vmrResultHint}>
               💡 Ask about: <Text style={{ fontWeight: '700' }}>{disc.replace('_', ' ')}</Text>
               {disc === 'stripe_color' ? '\n  → Blue stripe = Metformin\n  → Red stripe = Amlodipine' : ''}
             </Text>
@@ -209,9 +286,7 @@ export default function DawaScreen() {
       return (
         <View style={[styles.vmrResultBox, { backgroundColor: C.greenLight, borderColor: C.green }]}>
           <Text style={[styles.vmrResultTitle, { color: C.green }]}>✓ UNIQUE — IDENTIFIED</Text>
-          <Text style={styles.vmrResultBody}>
-            {med?.nickname ?? vmrResult.medicationId}
-          </Text>
+          <Text style={styles.vmrResultBody}>{med?.nickname ?? vmrResult.medicationId}</Text>
           {med && (
             <Text style={styles.vmrResultSub}>
               {med.clinical_name} {med.dosage} · {med.dose_instruction}
@@ -223,7 +298,74 @@ export default function DawaScreen() {
     return null;
   }
 
-  // ── Render ──────────────────────────────────────────────────────────────
+  // ── UPCOMING CALL card ────────────────────────────────────────────────────
+  function renderUpcomingCallCard() {
+    if (!scheduledCall) return null;
+    const status = scheduledCall.callStatus;
+    const statusColor = STATUS_COLOR[status] ?? C.textMuted;
+    const statusLabel = STATUS_LABEL[status] ?? status;
+    const med = medications.find(m => m.id === scheduledCall.medicationId);
+    const isActive = ['calling', 'dispatched', 'dialing', 'ringing', 'answered'].includes(status);
+    const isDone   = ['completed', 'failed'].includes(status);
+
+    return (
+      <View style={[styles.card, {
+        borderLeftWidth: 4,
+        borderLeftColor: statusColor,
+        marginBottom: 12,
+      }]}>
+        <View style={styles.row}>
+          <Text style={styles.sectionLabel}>UPCOMING CALL</Text>
+          {isActive && <PulsingDot color={statusColor} />}
+        </View>
+        <Text style={styles.upcomingMedName}>
+          {med?.nickname ?? med?.clinical_name ?? scheduledCall.medicationId}
+        </Text>
+        <Text style={styles.upcomingTime}>
+          {med ? `${formatScheduleTime(med.schedule_time)}` : ''}
+          {countdownSeconds !== null && countdownSeconds > 0 && !isActive
+            ? ` · demo in ${Math.ceil(countdownSeconds / 60)} min` : ''}
+        </Text>
+
+        {/* Countdown display */}
+        {countdownSeconds !== null && countdownSeconds > 0 && !isActive && (
+          <View style={styles.countdownBox}>
+            <Text style={styles.countdownNumber}>{formatCountdown(countdownSeconds)}</Text>
+            <Text style={styles.countdownLabel}>until DAWA calls Razia</Text>
+          </View>
+        )}
+
+        {/* Status badge */}
+        <View style={[styles.statusBadge, { backgroundColor: statusColor + '22' }]}>
+          <Text style={[styles.statusBadgeText, { color: statusColor }]}>
+            {statusLabel}
+          </Text>
+        </View>
+
+        {/* Phase timeline */}
+        <View style={styles.timeline}>
+          {(['scheduled', 'due', 'calling', 'ringing', 'answered', 'completed'] as const).map((s, i) => {
+            const reached = isStatusReached(status, s);
+            return (
+              <React.Fragment key={s}>
+                {i > 0 && (
+                  <View style={[styles.timelineLine, reached && { backgroundColor: statusColor }]} />
+                )}
+                <View style={[styles.timelineDot,
+                  reached && { backgroundColor: statusColor, borderColor: statusColor }]} />
+              </React.Fragment>
+            );
+          })}
+        </View>
+        <View style={styles.timelineLabels}>
+          {['Sched', 'Due', 'Calling', 'Ringing', 'Answered', isDone ? statusLabel : 'Done'].map((l) => (
+            <Text key={l} style={styles.timelineLabel}>{l}</Text>
+          ))}
+        </View>
+      </View>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="light-content" backgroundColor={C.green} />
@@ -275,32 +417,47 @@ export default function DawaScreen() {
           </View>
         )}
 
+        {/* ── UPCOMING CALL card (P2) ── */}
+        {renderUpcomingCallCard()}
+
+        {/* ── Schedule error ── */}
+        {scheduleError && (
+          <View style={[styles.card, { borderLeftWidth: 4, borderLeftColor: C.red }]}>
+            <Text style={[styles.errorTitle, { fontSize: 14 }]}>Schedule error</Text>
+            <Text style={styles.errorBody}>{scheduleError}</Text>
+          </View>
+        )}
+
         {/* ── Today's schedule ── */}
         {medications.length > 0 && (
           <>
-            <Text style={styles.sectionLabel}>TODAY'S MEDICATIONS</Text>
+            <Text style={styles.sectionHeader}>Today's Schedule</Text>
+
             {medications.map((med) => {
-              const isCallable = med.id === 'metformin-500'; // evening call for demo
+              const isMetformin = med.id === 'metformin-500';
+              const alreadyScheduled = scheduledCall?.medicationId === med.id &&
+                !['completed', 'failed'].includes(scheduledCall.callStatus);
+
               return (
-                <View key={med.id} style={[styles.card, styles.medCard]}>
+                <View key={med.id} style={styles.card}>
+                  {/* Med header */}
                   <View style={styles.medHeader}>
                     <Text style={styles.medIcon}>{getMedicationIcon(med)}</Text>
                     <View style={{ flex: 1 }}>
+                      <Text style={styles.medNickname}>{med.nickname ?? med.clinical_name}</Text>
+                      <Text style={styles.medName}>{med.clinical_name} {med.dosage}</Text>
+                    </View>
+                    <View style={styles.medTimeBadge}>
                       <Text style={styles.medTime}>{formatScheduleTime(med.schedule_time)}</Text>
-                      <Text style={styles.medAnchor}>{med.routine_anchor}</Text>
                     </View>
                   </View>
 
-                  <Text style={styles.medNickname}>{med.nickname || med.clinical_name}</Text>
-                  <Text style={styles.medClinical}>
-                    {med.clinical_name} {med.dosage}  ·  {med.dose_instruction}
-                    {med.food_instruction && med.food_instruction !== 'none'
-                      ? `  ·  ${med.food_instruction}` : ''}
-                  </Text>
+                  <Text style={styles.medInstruction}>{med.dose_instruction} · {med.food_instruction}</Text>
 
+                  {/* Verified cues */}
                   {med.cues && Object.keys(med.cues).length > 0 && (
                     <View style={styles.cueRow}>
-                      {Object.entries(med.cues).slice(0, 3).map(([k, v]) => (
+                      {Object.entries(med.cues).map(([k, v]) => (
                         <View key={k} style={styles.cuePill}>
                           <Text style={styles.cuePillText}>{k.replace('_', ' ')}: {v}</Text>
                         </View>
@@ -308,18 +465,33 @@ export default function DawaScreen() {
                     </View>
                   )}
 
-                  {isCallable && (
+                  {/* Action row */}
+                  <View style={styles.medActions}>
+                    {/* Manual call button */}
                     <TouchableOpacity
                       style={[styles.callBtn, isActiveCall && styles.callBtnDisabled]}
                       onPress={() => handleCallPress(med)}
                       disabled={isActiveCall}
-                      activeOpacity={0.8}
                     >
                       <Text style={styles.callBtnText}>
-                        {isActiveCall ? '📡 Call in progress…' : '📞 Call Razia now'}
+                        {isActiveCall ? '📞 Calling…' : '📞 Call Razia now'}
                       </Text>
                     </TouchableOpacity>
-                  )}
+
+                    {/* P2: Schedule demo reminder (Metformin only) */}
+                    {isMetformin && (
+                      <TouchableOpacity
+                        style={[styles.scheduleBtn, (alreadyScheduled || isScheduling) && styles.scheduleBtnDisabled]}
+                        onPress={() => setSchedulePickerOpen(true)}
+                        disabled={alreadyScheduled || isScheduling}
+                      >
+                        <Text style={styles.scheduleBtnText}>
+                          {isScheduling ? '⏳ Scheduling…' :
+                           alreadyScheduled ? '✓ Scheduled' : '🕐 Schedule demo reminder'}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 </View>
               );
             })}
@@ -327,394 +499,363 @@ export default function DawaScreen() {
         )}
 
         {/* ── Active call status ── */}
-        {(isActiveCall || callPhase === 'completed' || callPhase === 'failed') && callPhase !== 'idle' && (
-          <View style={[styles.card, styles.statusCard]}>
-            <Text style={styles.sectionLabel} >CALL STATUS</Text>
-            <View style={styles.statusRow}>
+        {callPhase !== 'idle' && (
+          <View style={styles.card}>
+            <Text style={styles.sectionLabel}>MANUAL CALL STATUS</Text>
+            <View style={styles.phaseRow}>
               {isActiveCall && <PulsingDot color={phaseColor} />}
-              <Text style={[styles.statusLabel, { color: phaseColor }]}>
+              <Text style={[styles.phaseLabel, { color: phaseColor }]}>
                 {PHASE_LABEL[callPhase] ?? callPhase}
               </Text>
             </View>
-
-            {/* Phase timeline */}
-            <View style={styles.phaseTimeline}>
-              {(['dispatched','dialing','ringing','answered','completed'] as const).map((ph) => {
-                const phaseOrder = ['dispatched','dialing','ringing','answered','completed'];
-                const current = phaseOrder.indexOf(callPhase);
-                const thisIdx = phaseOrder.indexOf(ph);
-                const active = current >= thisIdx;
-                return (
-                  <View key={ph} style={styles.phaseStep}>
-                    <View style={[styles.phaseDot, active && { backgroundColor: C.green }]} />
-                    <Text style={[styles.phaseLabel, active && { color: C.green }]}>
-                      {ph}
-                    </Text>
-                  </View>
-                );
-              })}
-            </View>
-
-            {callPhase === 'completed' && (
-              <View style={styles.adherenceNotice}>
-                <Text style={styles.adherenceText}>
-                  📋 Call ended — adherence outcome not yet confirmed.
-                  {'\n'}A completed call ≠ medication taken.
-                </Text>
-              </View>
-            )}
-
             {callError && (
               <Text style={styles.callErrorText}>⚠ {callError}</Text>
             )}
-            {activeCallId && (
-              <Text style={styles.callIdText}>Call ID: {activeCallId}</Text>
-            )}
+            <View style={styles.phaseTimeline}>
+              {(['dispatched', 'dialing', 'ringing', 'answered', 'completed'] as const).map((p, i) => {
+                const reached = isCallPhaseReached(callPhase as any, p);
+                return (
+                  <React.Fragment key={p}>
+                    {i > 0 && (
+                      <View style={[styles.timelineLine, reached && { backgroundColor: phaseColor }]} />
+                    )}
+                    <View style={[styles.timelineDot, reached && { backgroundColor: phaseColor, borderColor: phaseColor }]} />
+                  </React.Fragment>
+                );
+              })}
+            </View>
+            <View style={[styles.timelineLabels, { marginTop: 4 }]}>
+              {['Dispatch', 'Dialing', 'Ringing', 'Answered', 'Done'].map((l) => (
+                <Text key={l} style={styles.timelineLabel}>{l}</Text>
+              ))}
+            </View>
           </View>
         )}
 
-        {callError && callPhase === 'idle' && (
-          <View style={[styles.card, { backgroundColor: C.redLight, borderColor: C.red }]}>
-            <Text style={{ color: C.red, fontSize: 14 }}>⚠ {callError}</Text>
-          </View>
-        )}
-
-        {/* ── VMR Demo card ── */}
-        <Text style={styles.sectionLabel}>MEDICINE RECOGNITION DEMO</Text>
-        <View style={[styles.card, styles.vmrCard]}>
-          <Text style={styles.vmrTitle}>Verified Medication Recognition</Text>
+        {/* ── VMR demo card ── */}
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>MEDICATION IDENTIFIER (VMR)</Text>
           <Text style={styles.vmrSubtitle}>
-            Razia holds up her medicine. Tap cues to identify it.
+            Both white boxes — tap to identify which medicine it is.
           </Text>
 
-          {/* Step 1: Box color */}
           <Text style={styles.vmrStepLabel}>Step 1 — Box colour</Text>
-          <View style={styles.vmrBtnRow}>
-            {[
-              { label: '⬜ White', value: 'white' },
-              { label: '🟩 Green', value: 'green' },
-              { label: '🟦 Blue',  value: 'blue'  },
-            ].map(({ label, value }) => (
+          <View style={styles.vmrRow}>
+            {['white', 'blue', 'green'].map((color) => (
               <TouchableOpacity
-                key={value}
-                style={[styles.vmrCueBtn, vmrBoxColor === value && styles.vmrCueBtnActive]}
-                onPress={() => handleVmrBoxColor(value)}
+                key={color}
+                style={[styles.vmrColorBtn,
+                  vmrBoxColor === color && { borderColor: C.green, borderWidth: 2.5 }]}
+                onPress={() => handleVmrBoxColor(color)}
               >
-                <Text style={[styles.vmrCueBtnText, vmrBoxColor === value && { color: C.green }]}>
-                  {label}
-                </Text>
+                <Text style={styles.vmrColorLabel}>{color}</Text>
               </TouchableOpacity>
             ))}
           </View>
 
-          {/* Step 2: Stripe (only after white is selected) */}
           {vmrBoxColor === 'white' && (
             <>
-              <Text style={styles.vmrStepLabel}>Step 2 — Stripe on the box?</Text>
-              <View style={styles.vmrBtnRow}>
-                {[
-                  { label: '🔵 Blue stripe', value: 'blue' },
-                  { label: '🔴 Red stripe',  value: 'red'  },
-                  { label: '— No stripe',    value: 'none' },
-                ].map(({ label, value }) => (
+              <Text style={styles.vmrStepLabel}>Step 2 — Stripe colour</Text>
+              <View style={styles.vmrRow}>
+                {['none', 'blue', 'red', 'yellow'].map((stripe) => (
                   <TouchableOpacity
-                    key={value}
-                    style={[styles.vmrCueBtn, vmrStripeColor === value && styles.vmrCueBtnActive]}
-                    onPress={() => handleVmrStripeColor(value)}
+                    key={stripe}
+                    style={[styles.vmrColorBtn,
+                      vmrStripeColor === stripe && { borderColor: C.green, borderWidth: 2.5 }]}
+                    onPress={() => handleVmrStripeColor(stripe)}
                   >
-                    <Text style={[styles.vmrCueBtnText, vmrStripeColor === value && { color: C.green }]}>
-                      {label}
-                    </Text>
+                    <Text style={styles.vmrColorLabel}>{stripe}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
             </>
           )}
 
-          {/* VMR spinner */}
           {vmrLoading && (
-            <View style={{ alignItems: 'center', paddingVertical: 8 }}>
-              <ActivityIndicator color={C.green} />
-            </View>
+            <ActivityIndicator color={C.green} style={{ marginTop: 8 }} />
           )}
+          {renderVmrResult()}
 
-          {/* VMR result */}
-          {!vmrLoading && renderVmrResult()}
-
-          {/* Reset button */}
           {(vmrBoxColor || vmrResult) && (
             <TouchableOpacity style={styles.vmrResetBtn} onPress={resetVmr}>
-              <Text style={styles.vmrResetText}>↺ Reset</Text>
+              <Text style={styles.vmrResetText}>↺ Reset VMR</Text>
             </TouchableOpacity>
           )}
-
-          {/* How it works note */}
-          <Text style={styles.vmrNote}>
-            ℹ VMR is deterministic — no AI, no guessing.  Verified by caregiver.
-          </Text>
         </View>
 
-        {/* ── Safety card ── */}
-        <Text style={styles.sectionLabel}>SAFETY RULES</Text>
-        <View style={[styles.card, styles.safetyCard]}>
-          <Text style={styles.safetyTitle}>🛡 DAWA Safety Principles</Text>
-          {[
-            { icon: '🚫', text: 'Never changes the prescribed dose — even if patient asks' },
-            { icon: '🚫', text: 'Never recommends a double dose if a previous dose is uncertain' },
-            { icon: '✅', text: 'Only uses caregiver-verified medication descriptions' },
-            { icon: '📣', text: 'Escalates any uncertainty to the caregiver immediately' },
-            { icon: '📋', text: 'Call completed ≠ medication taken — adherence tracked separately' },
-          ].map(({ icon, text }, i) => (
-            <View key={i} style={styles.safetyRow}>
-              <Text style={styles.safetyIcon}>{icon}</Text>
-              <Text style={styles.safetyText}>{text}</Text>
-            </View>
-          ))}
+        {/* ── Safety rules ── */}
+        <View style={[styles.card, { borderLeftWidth: 4, borderLeftColor: C.orange }]}>
+          <Text style={styles.sectionLabel}>SAFETY RULES</Text>
+          <Text style={styles.safetyItem}>✓ Completed call ≠ dose taken — verify separately</Text>
+          <Text style={styles.safetyItem}>✓ VMR uses caregiver-verified visual cues only</Text>
+          <Text style={styles.safetyItem}>✓ Phone number is set by the care team, not the app</Text>
+          <Text style={styles.safetyItem}>✓ DAWA never auto-records TAKEN from call status</Text>
         </View>
 
-        {/* ── Recent events (compact) ── */}
-        {recentDoseEvents.length > 0 && (
-          <>
-            <Text style={styles.sectionLabel}>RECENT CALLS</Text>
-            <View style={[styles.card]}>
-              {recentDoseEvents.slice(0, 4).map((ev) => (
-                <View key={ev.id} style={styles.eventRow}>
-                  <View style={[styles.eventDot, { backgroundColor: ev.callStatus === 'completed' ? C.green : ev.callStatus === 'failed' ? C.red : C.orange }]} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.eventMed}>{ev.medicationId}</Text>
-                    <Text style={styles.eventStatus}>
-                      {ev.callStatus}
-                      {ev.adherenceOutcome ? ` · ${ev.adherenceOutcome}` : ' · outcome pending'}
-                    </Text>
-                  </View>
-                  <Text style={styles.eventTime}>
-                    {new Date(ev.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          </>
-        )}
-
-        <View style={{ height: 32 }} />
       </ScrollView>
 
-      {/* ── Settings modal ── */}
-      <Modal visible={settingsOpen} animationType="slide" presentationStyle="pageSheet">
-        <SafeAreaView style={styles.modalSafe}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Settings</Text>
-            <TouchableOpacity onPress={() => setSettingsOpen(false)}>
-              <Text style={styles.modalClose}>Done</Text>
-            </TouchableOpacity>
+      {/* ── Delay picker modal (P2) ── */}
+      <Modal
+        visible={schedulePickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSchedulePickerOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.pickerCard}>
+            <Text style={styles.pickerTitle}>Schedule demo reminder</Text>
+            <Text style={styles.pickerSubtitle}>
+              DAWA will call Razia after the selected delay.{'\n'}
+              Do not touch the app — the call will happen automatically.
+            </Text>
+
+            {DELAY_OPTIONS.map((opt) => (
+              <TouchableOpacity
+                key={opt.value}
+                style={[styles.delayOption, selectedDelay === opt.value && styles.delayOptionSelected]}
+                onPress={() => setSelectedDelay(opt.value)}
+              >
+                <Text style={[styles.delayOptionText, selectedDelay === opt.value && { color: C.green, fontWeight: '700' }]}>
+                  {opt.label}
+                </Text>
+                {selectedDelay === opt.value && (
+                  <Text style={{ color: C.green, fontSize: 18 }}>✓</Text>
+                )}
+              </TouchableOpacity>
+            ))}
+
+            <View style={styles.pickerActions}>
+              <TouchableOpacity
+                style={[styles.pickerBtn, { backgroundColor: C.greenLight, borderColor: C.green }]}
+                onPress={handleSchedulePress}
+              >
+                <Text style={[styles.pickerBtnText, { color: C.green }]}>Confirm</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.pickerBtn, { backgroundColor: C.bg, borderColor: C.border }]}
+                onPress={() => setSchedulePickerOpen(false)}
+              >
+                <Text style={[styles.pickerBtnText, { color: C.textMid }]}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-          <ScrollView style={styles.modalBody}>
-            <Text style={styles.fieldLabel}>DAWA Backend URL</Text>
+        </View>
+      </Modal>
+
+      {/* ── Settings modal ── */}
+      <Modal
+        visible={settingsOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSettingsOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.settingsCard}>
+            <Text style={styles.settingsTitle}>DAWA Settings</Text>
+
+            <Text style={styles.settingsLabel}>Backend URL</Text>
             <TextInput
-              style={styles.urlInput}
+              style={styles.settingsInput}
               value={urlDraft}
               onChangeText={setUrlDraft}
-              placeholder="https://your-replit-domain.replit.dev"
+              placeholder="https://your-replit-domain"
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="url"
             />
-            <Text style={styles.urlHint}>
-              Set this to your Replit dev domain (no trailing slash).{'\n'}
-              Example: https://abc123.replit.dev
-            </Text>
+
             <TouchableOpacity
-              style={styles.saveBtn}
-              onPress={async () => {
-                await setApiBaseUrl(urlDraft);
+              style={styles.settingsSaveBtn}
+              onPress={() => {
+                setApiBaseUrl(urlDraft);
                 setSettingsOpen(false);
-                refresh();
               }}
             >
-              <Text style={styles.saveBtnText}>Save & Connect</Text>
+              <Text style={styles.settingsSaveBtnText}>Save & Close</Text>
             </TouchableOpacity>
 
-            <View style={styles.infoBox}>
-              <Text style={styles.infoTitle}>How it works</Text>
-              <Text style={styles.infoText}>
-                DAWA connects to the Python backend and proxy at /api/*.{'\n\n'}
-                Ensure both "DAWA Backend" and "API Server" workflows are running.{'\n\n'}
-                Phone number is always read from TEST_PHONE_NUMBER on the server — never sent from this app.
-              </Text>
-            </View>
-          </ScrollView>
-        </SafeAreaView>
+            {/* P2: Reset demo */}
+            <View style={styles.settingsDivider} />
+            <Text style={styles.settingsLabel}>Demo Controls</Text>
+            <TouchableOpacity
+              style={[styles.resetBtn, isResetting && styles.resetBtnDisabled]}
+              onPress={() => { setSettingsOpen(false); setTimeout(handleReset, 200); }}
+              disabled={isResetting}
+            >
+              {isResetting
+                ? <ActivityIndicator color={C.red} size="small" />
+                : <Text style={styles.resetBtnText}>🗑 Reset demo</Text>
+              }
+            </TouchableOpacity>
+            {resetError && (
+              <Text style={[styles.errorBody, { marginTop: 4 }]}>{resetError}</Text>
+            )}
+            <Text style={styles.resetHint}>
+              Clears call history and scheduled reminders.{'\n'}
+              Razia's medication data is preserved.
+            </Text>
+          </View>
+        </View>
       </Modal>
     </SafeAreaView>
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+// ─── Phase helpers ────────────────────────────────────────────────────────────
+
+type CallPhaseKey = 'dispatched' | 'dialing' | 'ringing' | 'answered' | 'completed';
+const CALL_PHASE_ORDER: CallPhaseKey[] = ['dispatched', 'dialing', 'ringing', 'answered', 'completed'];
+
+function isCallPhaseReached(current: string, target: CallPhaseKey): boolean {
+  const ci = CALL_PHASE_ORDER.indexOf(current as CallPhaseKey);
+  const ti = CALL_PHASE_ORDER.indexOf(target);
+  return ci >= ti;
+}
+
+type DoseStatusKey = 'scheduled' | 'due' | 'calling' | 'ringing' | 'answered' | 'completed';
+const STATUS_ORDER: DoseStatusKey[] = ['scheduled', 'due', 'calling', 'ringing', 'answered', 'completed'];
+
+function isStatusReached(current: string, target: DoseStatusKey): boolean {
+  const ci = STATUS_ORDER.indexOf(current as DoseStatusKey);
+  const ti = STATUS_ORDER.indexOf(target);
+  if (ci === -1) return false;
+  return ci >= ti;
+}
+
+// ─── Styles ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: C.green },
-  header: {
-    backgroundColor: C.green,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'android' ? 8 : 4,
-    paddingBottom: 16,
-  },
-  headerTitle:    { color: '#FFF', fontSize: 28, fontWeight: '800', letterSpacing: 1 },
-  headerSubtitle: { color: 'rgba(255,255,255,0.75)', fontSize: 14, marginTop: 1 },
-  gearBtn:        { padding: 8 },
+  safe:             { flex: 1, backgroundColor: C.green },
+  header:           { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+                      paddingHorizontal: 20, paddingVertical: 16, backgroundColor: C.green },
+  headerTitle:      { fontSize: 26, fontWeight: '800', color: '#fff', letterSpacing: 1.5 },
+  headerSubtitle:   { fontSize: 14, color: 'rgba(255,255,255,0.8)', marginTop: 2 },
+  gearBtn:          { padding: 8 },
 
-  scroll:         { flex: 1, backgroundColor: C.bg },
-  scrollContent:  { padding: 16 },
+  scroll:           { flex: 1, backgroundColor: C.bg },
+  scrollContent:    { padding: 16, paddingBottom: 40 },
 
-  card: {
-    backgroundColor: C.card,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-    borderWidth: 1,
-    borderColor: C.border,
-  },
+  card:             { backgroundColor: C.card, borderRadius: 16, padding: 16, marginBottom: 12,
+                      shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+                      shadowOpacity: 0.06, shadowRadius: 6, elevation: 3 },
+  sectionHeader:    { fontSize: 13, fontWeight: '700', color: C.textMuted, letterSpacing: 1,
+                      textTransform: 'uppercase', marginBottom: 8, marginTop: 4 },
+  sectionLabel:     { fontSize: 11, fontWeight: '700', color: C.textMuted, letterSpacing: 1,
+                      textTransform: 'uppercase', marginBottom: 8 },
+  row:              { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
 
-  sectionLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: C.textMuted,
-    letterSpacing: 1.2,
-    marginBottom: 8,
-    marginTop: 4,
-  },
+  // Patient
+  patientCard:      { borderLeftWidth: 4, borderLeftColor: C.green },
+  patientRow:       { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  patientAvatar:    { width: 52, height: 52, borderRadius: 26, backgroundColor: C.greenLight,
+                      alignItems: 'center', justifyContent: 'center' },
+  patientName:      { fontSize: 18, fontWeight: '700', color: C.textDark },
+  patientUrdu:      { fontSize: 14, color: C.urdu, marginTop: 2 },
+  patientBadge:     { fontSize: 12, color: C.textMuted, marginTop: 4 },
 
-  // Patient card
-  patientCard:   { borderLeftWidth: 4, borderLeftColor: C.green },
-  patientRow:    { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  patientAvatar: {
-    width: 52, height: 52, borderRadius: 26,
-    backgroundColor: C.greenLight,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  patientName:   { fontSize: 20, fontWeight: '700', color: C.textDark },
-  patientUrdu:   { fontSize: 15, color: C.urdu, marginTop: 2 },
-  patientBadge:  { fontSize: 12, color: C.textMuted, marginTop: 3 },
+  // Medication cards
+  medHeader:        { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 6 },
+  medIcon:          { fontSize: 24 },
+  medNickname:      { fontSize: 16, fontWeight: '700', color: C.textDark },
+  medName:          { fontSize: 13, color: C.textMuted, marginTop: 1 },
+  medTimeBadge:     { backgroundColor: C.greenLight, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  medTime:          { fontSize: 13, fontWeight: '700', color: C.green },
+  medInstruction:   { fontSize: 13, color: C.textMid, marginBottom: 10 },
+  cueRow:           { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 },
+  cuePill:          { backgroundColor: C.blueLight, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 3 },
+  cuePillText:      { fontSize: 11, color: C.blue, fontWeight: '600' },
+  medActions:       { gap: 8 },
+  callBtn:          { backgroundColor: C.green, borderRadius: 12, paddingVertical: 12,
+                      alignItems: 'center' },
+  callBtnDisabled:  { backgroundColor: C.textLight },
+  callBtnText:      { color: '#fff', fontWeight: '700', fontSize: 15 },
+  scheduleBtn:      { backgroundColor: C.purpleLight, borderRadius: 12, paddingVertical: 10,
+                      alignItems: 'center', borderWidth: 1.5, borderColor: C.purple },
+  scheduleBtnDisabled: { opacity: 0.5 },
+  scheduleBtnText:  { color: C.purple, fontWeight: '700', fontSize: 14 },
 
-  // Med card
-  medCard:    {},
-  medHeader:  { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
-  medIcon:    { fontSize: 24 },
-  medTime:    { fontSize: 18, fontWeight: '700', color: C.textDark },
-  medAnchor:  { fontSize: 12, color: C.textMuted, marginTop: 1 },
-  medNickname:{ fontSize: 17, fontWeight: '600', color: C.urdu, marginBottom: 2 },
-  medClinical:{ fontSize: 13, color: C.textMuted },
+  // UPCOMING CALL card
+  upcomingMedName:  { fontSize: 18, fontWeight: '700', color: C.textDark, marginBottom: 2 },
+  upcomingTime:     { fontSize: 13, color: C.textMuted, marginBottom: 10 },
+  countdownBox:     { alignItems: 'center', paddingVertical: 12, marginBottom: 10 },
+  countdownNumber:  { fontSize: 36, fontWeight: '800', color: C.purple, letterSpacing: 4 },
+  countdownLabel:   { fontSize: 13, color: C.textMuted, marginTop: 4 },
+  statusBadge:      { alignSelf: 'flex-start', borderRadius: 8, paddingHorizontal: 12,
+                      paddingVertical: 4, marginBottom: 10 },
+  statusBadgeText:  { fontSize: 13, fontWeight: '700' },
 
-  cueRow:     { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 },
-  cuePill:    {
-    backgroundColor: C.bg,
-    borderRadius: 20, borderWidth: 1, borderColor: C.border,
-    paddingHorizontal: 10, paddingVertical: 3,
-  },
-  cuePillText: { fontSize: 11, color: C.textMid },
+  // Timeline
+  timeline:         { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
+  timelineLine:     { flex: 1, height: 2, backgroundColor: C.border },
+  timelineDot:      { width: 10, height: 10, borderRadius: 5, borderWidth: 2,
+                      borderColor: C.border, backgroundColor: C.card },
+  timelineLabels:   { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
+  timelineLabel:    { fontSize: 10, color: C.textLight, flex: 1, textAlign: 'center' },
 
-  callBtn: {
-    backgroundColor: C.green,
-    borderRadius: 10, paddingVertical: 13,
-    alignItems: 'center', marginTop: 12,
-  },
-  callBtnDisabled: { backgroundColor: C.textLight },
-  callBtnText: { color: '#FFF', fontSize: 16, fontWeight: '700' },
+  // Manual call status
+  phaseRow:         { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  phaseLabel:       { fontSize: 16, fontWeight: '700' },
+  phaseTimeline:    { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
+  callErrorText:    { fontSize: 13, color: C.red, marginTop: 4 },
 
-  // Status card
-  statusCard:  {},
-  statusRow:   { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-  statusLabel: { fontSize: 18, fontWeight: '700' },
+  // VMR
+  vmrSubtitle:      { fontSize: 13, color: C.textMid, marginBottom: 12 },
+  vmrStepLabel:     { fontSize: 12, fontWeight: '600', color: C.textMuted, marginBottom: 6 },
+  vmrRow:           { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  vmrColorBtn:      { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8,
+                      backgroundColor: C.bg, borderWidth: 1.5, borderColor: C.border },
+  vmrColorLabel:    { fontSize: 13, color: C.textMid, fontWeight: '600' },
+  vmrResultBox:     { borderWidth: 1.5, borderRadius: 10, padding: 12, marginTop: 4 },
+  vmrResultTitle:   { fontSize: 14, fontWeight: '800', marginBottom: 4 },
+  vmrResultBody:    { fontSize: 15, fontWeight: '700', color: C.textDark },
+  vmrResultSub:     { fontSize: 12, color: C.textMuted, marginTop: 4 },
+  vmrResultHint:    { fontSize: 13, color: C.textMid, marginTop: 6, lineHeight: 20 },
+  vmrResetBtn:      { marginTop: 10, alignSelf: 'flex-start', paddingVertical: 6, paddingHorizontal: 12,
+                      borderRadius: 8, backgroundColor: C.bg, borderWidth: 1, borderColor: C.border },
+  vmrResetText:     { fontSize: 13, color: C.textMuted },
 
-  phaseTimeline: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
-  phaseStep:     { alignItems: 'center', flex: 1 },
-  phaseDot:      { width: 8, height: 8, borderRadius: 4, backgroundColor: C.border, marginBottom: 4 },
-  phaseLabel:    { fontSize: 9, color: C.textLight, textAlign: 'center' },
-
-  adherenceNotice: {
-    backgroundColor: C.orangeLight, borderRadius: 8, padding: 10, marginTop: 8,
-    borderWidth: 1, borderColor: C.orange,
-  },
-  adherenceText: { fontSize: 12, color: C.orange, lineHeight: 18 },
-  callErrorText: { color: C.red, fontSize: 12, marginTop: 6 },
-  callIdText:    { color: C.textLight, fontSize: 10, marginTop: 4 },
+  // Safety
+  safetyItem:       { fontSize: 13, color: C.textMid, marginBottom: 4, lineHeight: 20 },
 
   // Error / loading
-  errorCard:   { backgroundColor: C.redLight, borderColor: C.red },
-  errorTitle:  { fontSize: 15, fontWeight: '700', color: C.red, marginBottom: 4 },
-  errorBody:   { fontSize: 13, color: C.red, marginBottom: 12 },
-  retryBtn:    { backgroundColor: C.red, borderRadius: 8, paddingVertical: 8, alignItems: 'center' },
-  retryBtnText:{ color: '#FFF', fontWeight: '700' },
-  loadingBox:  { alignItems: 'center', paddingVertical: 40, gap: 12 },
-  loadingText: { color: C.textMuted, fontSize: 14 },
+  errorCard:        { borderLeftWidth: 4, borderLeftColor: C.red },
+  errorTitle:       { fontSize: 16, fontWeight: '700', color: C.red, marginBottom: 4 },
+  errorBody:        { fontSize: 13, color: C.textMid },
+  retryBtn:         { marginTop: 8, alignSelf: 'flex-start', backgroundColor: C.red,
+                      borderRadius: 8, paddingHorizontal: 14, paddingVertical: 7 },
+  retryBtnText:     { color: '#fff', fontWeight: '700', fontSize: 13 },
+  loadingBox:       { alignItems: 'center', paddingVertical: 32 },
+  loadingText:      { color: C.textMuted, marginTop: 10 },
 
-  // VMR card
-  vmrCard:     { borderTopWidth: 3, borderTopColor: C.green },
-  vmrTitle:    { fontSize: 16, fontWeight: '700', color: C.textDark, marginBottom: 2 },
-  vmrSubtitle: { fontSize: 13, color: C.textMuted, marginBottom: 14 },
-  vmrStepLabel:{ fontSize: 12, fontWeight: '600', color: C.textMid, marginBottom: 8, marginTop: 4 },
-  vmrBtnRow:   { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
-  vmrCueBtn: {
-    paddingHorizontal: 14, paddingVertical: 9,
-    borderRadius: 8, borderWidth: 1.5, borderColor: C.border,
-    backgroundColor: C.bg,
-  },
-  vmrCueBtnActive: { borderColor: C.green, backgroundColor: C.greenLight },
-  vmrCueBtnText:   { fontSize: 13, fontWeight: '500', color: C.textMid },
-
-  vmrResultBox:  { borderRadius: 8, borderWidth: 1, padding: 12, marginTop: 10 },
-  vmrResultTitle:{ fontSize: 14, fontWeight: '800', letterSpacing: 0.5, marginBottom: 4 },
-  vmrResultBody: { fontSize: 15, fontWeight: '600', color: C.textDark },
-  vmrResultSub:  { fontSize: 12, color: C.textMuted, marginTop: 3 },
-  vmrResultHint: { fontSize: 13, color: C.textMid, marginTop: 6, lineHeight: 20 },
-
-  vmrResetBtn:  { alignSelf: 'flex-start', marginTop: 12, paddingVertical: 6 },
-  vmrResetText: { color: C.green, fontSize: 13, fontWeight: '600' },
-  vmrNote:      { fontSize: 11, color: C.textLight, marginTop: 12, fontStyle: 'italic' },
-
-  // Safety card
-  safetyCard:  { borderLeftWidth: 4, borderLeftColor: C.orange },
-  safetyTitle: { fontSize: 15, fontWeight: '700', color: C.textDark, marginBottom: 10 },
-  safetyRow:   { flexDirection: 'row', gap: 8, marginBottom: 8, alignItems: 'flex-start' },
-  safetyIcon:  { fontSize: 16, width: 24 },
-  safetyText:  { fontSize: 13, color: C.textMid, flex: 1, lineHeight: 19 },
-
-  // Recent events
-  eventRow:    { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.border },
-  eventDot:    { width: 8, height: 8, borderRadius: 4 },
-  eventMed:    { fontSize: 13, fontWeight: '600', color: C.textDark },
-  eventStatus: { fontSize: 11, color: C.textMuted, marginTop: 1 },
-  eventTime:   { fontSize: 11, color: C.textLight },
+  // Delay picker modal
+  modalOverlay:     { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center',
+                      alignItems: 'center', padding: 20 },
+  pickerCard:       { backgroundColor: C.card, borderRadius: 20, padding: 24, width: '100%', maxWidth: 360 },
+  pickerTitle:      { fontSize: 18, fontWeight: '800', color: C.textDark, marginBottom: 6 },
+  pickerSubtitle:   { fontSize: 13, color: C.textMuted, marginBottom: 20, lineHeight: 20 },
+  delayOption:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+                      padding: 14, borderRadius: 12, borderWidth: 1.5, borderColor: C.border,
+                      marginBottom: 10 },
+  delayOptionSelected: { borderColor: C.green, backgroundColor: C.greenLight },
+  delayOptionText:  { fontSize: 15, color: C.textMid, fontWeight: '600' },
+  pickerActions:    { flexDirection: 'row', gap: 12, marginTop: 8 },
+  pickerBtn:        { flex: 1, borderRadius: 12, borderWidth: 1.5, paddingVertical: 12,
+                      alignItems: 'center' },
+  pickerBtnText:    { fontSize: 15, fontWeight: '700' },
 
   // Settings modal
-  modalSafe:   { flex: 1, backgroundColor: C.card },
-  modalHeader: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    padding: 16, borderBottomWidth: 1, borderBottomColor: C.border,
-  },
-  modalTitle:  { fontSize: 18, fontWeight: '700', color: C.textDark },
-  modalClose:  { fontSize: 16, color: C.green, fontWeight: '600' },
-  modalBody:   { padding: 20 },
-
-  fieldLabel:  { fontSize: 12, fontWeight: '700', color: C.textMuted, letterSpacing: 1, marginBottom: 6 },
-  urlInput: {
-    backgroundColor: C.bg, borderRadius: 10, borderWidth: 1.5, borderColor: C.border,
-    padding: 14, fontSize: 15, color: C.textDark, marginBottom: 8,
-  },
-  urlHint:     { fontSize: 12, color: C.textMuted, marginBottom: 20 },
-  saveBtn:     { backgroundColor: C.green, borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
-  saveBtnText: { color: '#FFF', fontSize: 16, fontWeight: '700' },
-  infoBox: {
-    backgroundColor: C.greenLight, borderRadius: 10,
-    padding: 14, marginTop: 20,
-  },
-  infoTitle:   { fontSize: 14, fontWeight: '700', color: C.green, marginBottom: 6 },
-  infoText:    { fontSize: 13, color: C.textMid, lineHeight: 20 },
+  settingsCard:     { backgroundColor: C.card, borderRadius: 20, padding: 24, width: '100%', maxWidth: 400 },
+  settingsTitle:    { fontSize: 20, fontWeight: '800', color: C.textDark, marginBottom: 20 },
+  settingsLabel:    { fontSize: 12, fontWeight: '700', color: C.textMuted, letterSpacing: 1,
+                      textTransform: 'uppercase', marginBottom: 8 },
+  settingsInput:    { borderWidth: 1.5, borderColor: C.border, borderRadius: 10, padding: 12,
+                      fontSize: 14, color: C.textDark, marginBottom: 16 },
+  settingsSaveBtn:  { backgroundColor: C.green, borderRadius: 10, paddingVertical: 13,
+                      alignItems: 'center', marginBottom: 4 },
+  settingsSaveBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  settingsDivider:  { height: 1, backgroundColor: C.border, marginVertical: 20 },
+  resetBtn:         { borderWidth: 1.5, borderColor: C.red, borderRadius: 10, paddingVertical: 11,
+                      alignItems: 'center', marginBottom: 8 },
+  resetBtnDisabled: { opacity: 0.5 },
+  resetBtnText:     { color: C.red, fontWeight: '700', fontSize: 14 },
+  resetHint:        { fontSize: 12, color: C.textLight, lineHeight: 18 },
 });

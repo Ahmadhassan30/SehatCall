@@ -49,7 +49,7 @@ def _connect() -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 
 def init_dawa_db() -> None:
-    """Create all P1 tables if they do not already exist."""
+    """Create all P1/P2 tables and migrate schema if they do not already exist."""
     with _connect() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS patients (
@@ -110,6 +110,25 @@ def init_dawa_db() -> None:
                 UNIQUE(patient_id, memory_key)
             );
         """)
+
+        # ── P2 schema migration — safe to run on every startup ──────────────
+        # Add columns that didn't exist in P1.  SQLite raises OperationalError
+        # if a column already exists; we catch and ignore it.
+        for _alter in [
+            "ALTER TABLE dose_events ADD COLUMN schedule_key TEXT",
+            "ALTER TABLE dose_events ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+        ]:
+            try:
+                conn.execute(_alter)
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
+        # Unique index on schedule_key prevents duplicate auto-scan events
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_dose_events_schedule_key
+               ON dose_events(schedule_key)
+               WHERE schedule_key IS NOT NULL"""
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -386,3 +405,115 @@ def create_escalation(
         "createdAt": now,
         "resolvedAt": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# P2 dose event helpers
+# ---------------------------------------------------------------------------
+
+def _row_to_dose_event(r: sqlite3.Row) -> dict[str, Any]:
+    """Convert a sqlite3.Row from dose_events to a typed dict."""
+    keys = r.keys()
+    return {
+        "id":               r["id"],
+        "patientId":        r["patient_id"],
+        "medicationId":     r["medication_id"],
+        "scheduledTime":    r["scheduled_time"],
+        "callId":           r["call_id"],
+        "callStatus":       r["call_status"],
+        "adherenceOutcome": r["adherence_outcome"],
+        "scheduleKey":      r["schedule_key"] if "schedule_key" in keys else None,
+        "retryCount":       r["retry_count"] if "retry_count" in keys else 0,
+        "createdAt":        r["created_at"],
+        "updatedAt":        r["updated_at"],
+    }
+
+
+def get_dose_event(event_id: str) -> dict[str, Any] | None:
+    """Return a single dose event by ID, or None if not found."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM dose_events WHERE id = ?", (event_id,)
+        ).fetchone()
+    return _row_to_dose_event(row) if row else None
+
+
+def get_or_create_scheduled_dose_event(
+    schedule_key: str,
+    patient_id: str,
+    medication_id: str,
+    scheduled_time: str,
+) -> tuple[dict[str, Any], bool]:
+    """
+    Idempotent: return (event, True) if inserted, (event, False) if already exists.
+    The schedule_key uniquely identifies one scheduled dose occurrence
+    (e.g. "razia-bibi:metformin-500:2026-08-08:21:00").
+    """
+    now = _now_iso()
+    event_id = str(uuid.uuid4())
+    with _connect() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO dose_events
+               (id, patient_id, medication_id, scheduled_time,
+                call_id, call_status, adherence_outcome,
+                schedule_key, retry_count, created_at, updated_at)
+               VALUES (?, ?, ?, ?, NULL, 'scheduled', NULL, ?, 0, ?, ?)""",
+            (event_id, patient_id, medication_id, scheduled_time,
+             schedule_key, now, now),
+        )
+        row = conn.execute(
+            "SELECT * FROM dose_events WHERE schedule_key = ?", (schedule_key,)
+        ).fetchone()
+    event = _row_to_dose_event(row)
+    created = event["id"] == event_id
+    return event, created
+
+
+def get_active_dose_events() -> list[dict[str, Any]]:
+    """Return dose events with telephony-active call_status."""
+    statuses = ("calling", "dispatched", "dialing", "ringing", "answered")
+    placeholders = ",".join("?" * len(statuses))
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""SELECT * FROM dose_events
+                WHERE call_status IN ({placeholders})
+                ORDER BY created_at DESC""",
+            statuses,
+        ).fetchall()
+    return [_row_to_dose_event(r) for r in rows]
+
+
+def get_pending_dose_events() -> list[dict[str, Any]]:
+    """Return dose events with status 'scheduled' or 'due', ordered oldest first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT * FROM dose_events
+               WHERE call_status IN ('scheduled', 'due')
+               ORDER BY created_at ASC""",
+        ).fetchall()
+    return [_row_to_dose_event(r) for r in rows]
+
+
+def increment_retry_count(event_id: str) -> int:
+    """Increment retry_count by 1 and return the new value."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE dose_events SET retry_count = retry_count + 1, updated_at = ? WHERE id = ?",
+            (_now_iso(), event_id),
+        )
+        row = conn.execute(
+            "SELECT retry_count FROM dose_events WHERE id = ?", (event_id,)
+        ).fetchone()
+    return row["retry_count"] if row else 0
+
+
+def delete_demo_dose_events() -> int:
+    """
+    Delete all dose_events (for demo reset).
+    Preserves: patients, medications, medication_cues, patient_memory.
+    Returns: number of rows deleted.
+    """
+    with _connect() as conn:
+        cursor = conn.execute("DELETE FROM dose_events")
+        deleted = cursor.rowcount
+    return deleted

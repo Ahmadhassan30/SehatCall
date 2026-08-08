@@ -1,0 +1,656 @@
+# DAWA P2 — PROACTIVE MEDICATION CALLING + DEMO HARDENING
+
+TIME-CRITICAL FINAL FEATURE SLICE.
+
+P0-A and P1 are complete and passing.
+
+Current verified capabilities:
+
+- FastAPI backend
+- Uplift Singapore outbound calling
+- Razia Bibi demo patient
+- two seeded medications
+- deterministic VMR
+- verified call context
+- caregiver Expo app
+- demo-call endpoint
+- call-status tracking
+- 96 existing automated tests
+
+DO NOT redesign the application.
+
+DO NOT migrate databases.
+
+DO NOT introduce new infrastructure.
+
+The goal of P2 is to complete the single most important missing product
+promise:
+
+DAWA should proactively call the patient when medication becomes due.
+
+Also harden the demo so it can be shown reliably to judges.
+
+========================================================
+CORE PRODUCT PROMISE
+========================================================
+
+"DAWA calls the patient — the patient does not have to find DAWA."
+
+Current P1 requires the caregiver to press:
+
+Call Razia now
+
+P2 must additionally support:
+
+Medication due
+      ↓
+DAWA detects due dose
+      ↓
+creates/updates DoseEvent
+      ↓
+places Uplift phone call
+      ↓
+tracks real telephony lifecycle
+
+========================================================
+STRICT SCOPE
+========================================================
+
+Implement ONLY:
+
+1. lightweight medication scheduler
+2. due-dose detection
+3. safe single-call queue/lock
+4. controlled retry policy
+5. demo scheduling control
+6. caregiver UI visibility
+7. demo reset
+8. demo hardening/logging
+
+Do NOT implement:
+
+- Redis
+- Celery
+- Kafka
+- Docker
+- PostgreSQL migration
+- multi-patient CRUD
+- production auth
+- push notifications
+- RAG
+- LangChain
+- OCR
+- computer vision
+- Twilio
+- custom outbound-call RPC tools
+- unverified webhook integration
+- transcript-based adherence guessing
+- automatic prescription changes
+
+========================================================
+SCHEDULER
+========================================================
+
+Use APScheduler or another minimal in-process Python scheduler appropriate
+for this single Replit deployment.
+
+Do not create a distributed scheduler.
+
+Create:
+
+backend/app/services/scheduler.py
+
+Responsibilities:
+
+- inspect active medication schedules
+- determine whether a dose is due
+- create a dose_event idempotently
+- enqueue/dispatch the call
+- avoid duplicate calls for the same dose event
+- update telephony state where appropriate
+
+The scheduler must be isolated behind a small service interface so it can
+be replaced later.
+
+========================================================
+IMPORTANT DEPLOYMENT LIMITATION
+========================================================
+
+Document clearly:
+
+The in-process scheduler is suitable for this hackathon/demo deployment.
+
+It is NOT claimed to be a production-grade durable scheduler across
+multiple replicas or sleeping/restarting infrastructure.
+
+Production could later use a durable scheduler/task queue.
+
+Do not overengineer this now.
+
+========================================================
+DOSE EVENT IDENTITY
+========================================================
+
+A scheduled medication occurrence must have a deterministic identity.
+
+For example conceptually:
+
+patient_id
++
+medication_id
++
+scheduled local date/time
+
+must uniquely identify one scheduled dose event.
+
+Prevent duplicate DoseEvents when the scheduler scans repeatedly.
+
+Example:
+
+Razia
+metformin-500
+2026-08-08 21:00
+
+should create exactly ONE dose event.
+
+Repeated scheduler scans must not create another.
+
+========================================================
+TIMEZONE
+========================================================
+
+Use:
+
+Asia/Karachi
+
+for Razia's demo scheduling.
+
+Do not silently depend on server UTC/local timezone.
+
+Schedule calculations must explicitly use the Pakistan timezone.
+
+========================================================
+DOSE STATES
+========================================================
+
+Keep telephony state and adherence separate.
+
+DoseEvent flow:
+
+SCHEDULED
+→ DUE
+→ CALLING
+
+Then Uplift telephony state:
+
+dispatched
+dialing
+ringing
+answered
+completed
+failed
+
+Do NOT automatically set:
+
+TAKEN
+
+because a call completed.
+
+`adherence_outcome` remains nullable/unknown unless a future verified
+mechanism supplies it.
+
+========================================================
+SINGLE CALL CONCURRENCY
+========================================================
+
+Official Uplift hackathon calling supports only one outbound call in
+progress per organization by default.
+
+Design P2 around ONE active outbound call.
+
+Implement a very small local dispatch lock / queue.
+
+Do NOT use Redis.
+
+When a due medication appears while another DAWA call is active:
+
+- keep it queued/pending
+- dispatch it after the active call becomes terminal
+
+Do not fire simultaneous calls.
+
+========================================================
+RETRY POLICY
+========================================================
+
+Implement a small explicit retry policy.
+
+Retry later for:
+
+busy
+no_answer
+silent_pickup
+voicemail
+network_error
+
+Do NOT immediately retry:
+
+declined
+wrong_number
+
+For unreachable:
+
+mark retryable-later but do not aggressively redial.
+
+For hackathon demo:
+
+maximum 1 automatic retry is enough.
+
+Use a configurable short delay for demo mode.
+
+Do NOT create infinite retry loops.
+
+========================================================
+DEMO MODE
+========================================================
+
+This is important.
+
+We cannot wait until 9 PM during a presentation.
+
+Add a controlled demo scheduling endpoint:
+
+POST /api/dawa/schedule-demo-call
+
+Request approximately:
+
+{
+  "patientId": "razia-bibi",
+  "medicationId": "metformin-500",
+  "delaySeconds": 60
+}
+
+Constraints:
+
+- minimum delay: 15 seconds
+- maximum delay: 300 seconds
+- destination remains TEST_PHONE_NUMBER from server configuration
+- assistant remains UPLIFT_ASSISTANT_ID
+- client cannot supply arbitrary phone number
+- creates a real scheduled dose event
+- scheduler dispatches it after the delay
+- use Asia/Karachi timezone for displayed time
+
+This endpoint is explicitly for the hackathon demonstration.
+
+Do not confuse it with production medication scheduling.
+
+========================================================
+CAREGIVER UX
+========================================================
+
+Extend the EXISTING Expo caregiver app.
+
+Do not create another frontend.
+
+Under the Metformin / "raat wali goli" card add:
+
+Schedule demo reminder
+
+When pressed:
+
+show options such as:
+
+30 seconds
+60 seconds
+2 minutes
+
+Default:
+
+60 seconds
+
+After scheduling show:
+
+DAWA will call Razia in 1 minute
+
+Then display a visible countdown:
+
+00:59
+00:58
+...
+
+The countdown is cosmetic.
+
+Backend scheduled state is authoritative.
+
+========================================================
+SCHEDULED CALL UI
+========================================================
+
+Show a small lifecycle card:
+
+UPCOMING CALL
+
+Raat wali goli
+9:00 PM / demo in 1 min
+
+status:
+
+Scheduled
+
+Then:
+
+Due
+
+Calling
+
+Ringing
+
+Answered
+
+Completed
+
+or:
+
+Failed
+
+Use real backend/Uplift state.
+
+Do not fake Answered/Completed.
+
+========================================================
+DEMO RESET
+========================================================
+
+Add:
+
+POST /api/dawa/demo/reset
+
+Purpose:
+
+restore the demo to a predictable state before presenting.
+
+It may:
+
+- remove demo-created dose events
+- clear queued demo calls that have not been dispatched
+- clear temporary demo escalation examples if any
+- preserve Razia seed data
+- preserve medications
+- preserve verified cues
+- preserve patient memory
+
+It must NOT:
+
+- delete the database
+- change prescription truth
+- affect P0-A configuration
+- revoke Uplift assistant
+
+Expose a small caregiver control:
+
+Reset demo
+
+Place it in a secondary settings/debug area, not as the main UI action.
+
+========================================================
+DEMO STATE ENDPOINT
+========================================================
+
+Extend:
+
+GET /api/dawa/demo
+
+or add the smallest necessary field set so UI can see:
+
+- current server time in Asia/Karachi
+- next scheduled demo call
+- pending dose event
+- telephony state
+- last call ID masked/omitted as appropriate
+
+Do not expose secrets.
+
+========================================================
+CALL DISPATCH REUSE
+========================================================
+
+Do NOT create a second Uplift integration implementation.
+
+The scheduler must reuse the existing P1 verified-call-context and Uplift
+dispatch logic.
+
+There should be ONE authoritative path for DAWA calls:
+
+patient + medication
+      ↓
+verified call context
+      ↓
+Uplift /calls
+
+Manual demo-call and scheduled call should reuse the same service.
+
+========================================================
+IDEMPOTENCY
+========================================================
+
+Scheduled dose events must have stable idempotency protection.
+
+Do not use a completely random retry identity for the same dose occurrence.
+
+Conceptually:
+
+dose-event-id + attempt-number
+
+should generate the call Idempotency-Key.
+
+This prevents accidental duplicate redials.
+
+========================================================
+LOGGING
+========================================================
+
+Add concise events:
+
+DAWA_DOSE_SCHEDULED
+DAWA_DOSE_DUE
+DAWA_CALL_QUEUED
+DAWA_CALL_DISPATCHED
+DAWA_CALL_RETRY_SCHEDULED
+DAWA_CALL_TERMINAL
+DAWA_DEMO_RESET
+
+Never log:
+
+UPLIFTAI_API_KEY
+Authorization headers
+full TEST_PHONE_NUMBER
+
+Mask phone number if necessary.
+
+========================================================
+FAILURE EXPERIENCE
+========================================================
+
+The caregiver UI should show understandable states.
+
+Examples:
+
+No answer
+
+Busy
+
+Phone unreachable
+
+Call declined
+
+Network issue
+
+Do not expose raw technical exception dumps in the mobile UI.
+
+========================================================
+AUTOMATED TESTS
+========================================================
+
+Mock all real Uplift network calls.
+
+No automated test may place a real call.
+
+Add tests covering at least:
+
+1. Asia/Karachi timezone is explicit
+2. repeated scan creates only one dose event
+3. future medication is not called early
+4. due medication becomes DUE
+5. due medication dispatches once
+6. one active call prevents a second simultaneous dispatch
+7. pending call dispatches after terminal first call
+8. busy is retryable
+9. no_answer is retryable
+10. network_error is retryable
+11. declined is not automatically retried
+12. wrong_number is not automatically retried
+13. retry maximum is enforced
+14. demo delay less than 15 sec rejected
+15. demo delay greater than 300 sec rejected
+16. demo endpoint cannot accept destination phone
+17. scheduled call uses TEST_PHONE_NUMBER
+18. scheduled call uses UPLIFT_ASSISTANT_ID
+19. scheduled call uses verified call context
+20. repeated scheduler ticks do not duplicate call
+21. completed telephony status does NOT set TAKEN
+22. reset preserves Razia
+23. reset preserves medications
+24. reset removes demo dose events
+25. all P0-A tests remain passing
+26. all P1 tests remain passing
+
+Run the entire backend test suite.
+
+========================================================
+MANUAL ACCEPTANCE TEST
+========================================================
+
+After implementation:
+
+1.
+
+Open caregiver app.
+
+2.
+
+Tap:
+
+Schedule demo reminder
+→ 60 seconds
+
+3.
+
+UI shows countdown.
+
+4.
+
+Do NOT touch the application.
+
+5.
+
+Approximately one minute later:
+
+TEST_PHONE_NUMBER physically rings.
+
+This is the critical acceptance criterion.
+
+6.
+
+Answer.
+
+DAWA speaks using Razia Bibi + Metformin verified context.
+
+7.
+
+UI transitions through actual Uplift call state.
+
+8.
+
+Call ends.
+
+UI may show Completed but MUST NOT show Taken unless a separately verified
+adherence mechanism exists.
+
+9.
+
+Tap Reset demo.
+
+Razia and medication data remain.
+
+Temporary demo call state is cleared.
+
+========================================================
+DEMO STORY THIS ENABLES
+========================================================
+
+Judge:
+
+"Is this really proactive?"
+
+Developer:
+
+"I'll schedule Razia's medicine reminder for one minute from now."
+
+Continue explaining VMR.
+
+Without touching the phone/app:
+
+the patient's phone starts ringing.
+
+This must be the visual payoff.
+
+========================================================
+DO NOT BEGIN P3
+========================================================
+
+This should be the final product feature slice before polish.
+
+After implementation and tests, STOP.
+
+Return:
+
+## P2 Proactive Calling Report
+
+### Scheduler
+Explain exact scheduler mechanism and timezone.
+
+### Dose event idempotency
+Explain how duplicate calls are prevented.
+
+### Queue/concurrency
+Explain one-call handling.
+
+### Retry policy
+Show exact failureReason policy.
+
+### Demo scheduler
+Explain 15–300 second scheduling behavior.
+
+### Caregiver UI
+Describe scheduled call + countdown.
+
+### Reset
+Explain what is reset and what is preserved.
+
+### Uplift reuse
+Confirm manual and scheduled calls use the same verified context path.
+
+### Tests
+Exact total pass count.
+
+### P0/P1 regression
+Confirm all previous tests pass.
+
+### Manual acceptance remaining
+List real-phone tests only.
+
+### Production limitations
+Explicitly state in-process scheduler limitations.
+
+Then STOP.
