@@ -21,6 +21,8 @@ import React, {
   useState,
 } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { apiFetch } from '@/lib/api';
+import { AUTH_BASE_URL } from '@/lib/config';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -144,7 +146,16 @@ const DawaContext = createContext<DawaContextValue | null>(null);
 
 const STORAGE_KEY_URL = 'dawa_api_url';
 
+/**
+ * Default API origin.
+ *
+ * This MUST resolve to the same origin the Better Auth client is bound to
+ * (lib/config.ts AUTH_BASE_URL), otherwise the app would authenticate against
+ * one server and read caregiver data from another — the session cookie would
+ * never match and every /api/dawa/* call would 401.
+ */
 function deriveDefaultUrl(): string {
+  if (AUTH_BASE_URL) return AUTH_BASE_URL;
   const domain = process.env['EXPO_PUBLIC_DOMAIN'];
   if (domain) return `https://${domain}`;
   return '';
@@ -228,7 +239,7 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(true);
     setLoadError(null);
     try {
-      const res = await fetch(`${apiBaseUrl}/api/dawa/demo`);
+      const res = await apiFetch(apiBaseUrl, '/api/dawa/demo');
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
       const data = await res.json();
       setPatient(data.patient ?? null);
@@ -275,7 +286,7 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
     if (!apiBaseUrl || !patient || Object.keys(vmrCues).length === 0) return;
     setVmrLoading(true);
     try {
-      const res = await fetch(`${apiBaseUrl}/api/dawa/vmr/resolve`, {
+      const res = await apiFetch(apiBaseUrl, '/api/dawa/vmr/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ patientId: patient.id, cues: vmrCues }),
@@ -298,7 +309,7 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
   const pollCallStatus = useCallback(async () => {
     if (!apiBaseUrl) return;
     try {
-      const res = await fetch(`${apiBaseUrl}/api/dawa/call-status?limit=10`);
+      const res = await apiFetch(apiBaseUrl, '/api/dawa/call-status?limit=10');
       if (!res.ok) return;
       const data = await res.json();
       const events: DoseEvent[] = data.doseEvents ?? [];
@@ -367,7 +378,7 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
       setActiveDoseEventId(null);
       stopPolling();
       try {
-        const res = await fetch(`${apiBaseUrl}/api/dawa/demo-call`, {
+        const res = await apiFetch(apiBaseUrl, '/api/dawa/demo-call', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ patientId, medicationId }),
@@ -395,11 +406,22 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
       setIsScheduling(true);
       setScheduleError(null);
       try {
-        const res = await fetch(`${apiBaseUrl}/api/dawa/schedule-demo-call`, {
+        // Resolve the caregiver's own patient rather than assuming a fixed id —
+        // every account now has a different one.
+        const patientRes = await apiFetch(apiBaseUrl, '/api/dawa/patient');
+        const patientBody = await patientRes.json().catch(() => ({}));
+        if (!patientRes.ok) {
+          throw new Error(
+            (patientBody as { detail?: string }).detail ?? 'No patient set up yet.'
+          );
+        }
+        const patientId = (patientBody as { id: string }).id;
+
+        const res = await apiFetch(apiBaseUrl, '/api/dawa/schedule-demo-call', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            patientId: 'razia-bibi',
+            patientId,
             medicationId,
             delaySeconds,
           }),
@@ -437,7 +459,7 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
     setIsResetting(true);
     setResetError(null);
     try {
-      const res = await fetch(`${apiBaseUrl}/api/dawa/demo/reset`, { method: 'POST' });
+      const res = await apiFetch(apiBaseUrl, '/api/dawa/demo/reset', { method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? `Reset failed (${res.status})`);
 

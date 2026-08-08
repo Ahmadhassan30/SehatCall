@@ -2,3 +2,7 @@
 - [P1 architecture](p1-architecture.md) — P1 adds VMR, demo-call, dawa_store; proxy via api-server artifact; call_context size limits enforced.
 - [P2 scheduler](p2-scheduler.md) — APScheduler AsyncIOScheduler; settings reload required for tests; 120 tests total (P0-A+P1+P2).
 - [Voice agent prompting](voice-agent-prompting.md) — hallucination/loop/cutoff/silence each have a distinct prompt cause; base prompt must stay generic, truth arrives per-call.
+- [P3 architecture](p3-architecture.md) — caregiver setup + voice selection; migration pattern, voice catalog, voice-change ordering, ensure_preferred_voice, completed!=TAKEN invariant.
+- [P4 architecture](p4-architecture.md) — Better Auth graceful startup (null guard), secret names, test fixture pattern, SecureStore/apiFetch, single-origin invariant, fail-closed test wiring.
+- [Multi-user patients](multi-user-patients.md) — no seeded patient; per-patient Uplift assistant + locks; phone proved by voice call, checked at dispatch.
+- [Expo Go native modules](expo-go-native-modules.md) — app dies at launch on native but web renders fine? Suspect a third-party native lib, not the bundler.

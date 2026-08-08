@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.conftest import seed_test_patient
+
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -26,9 +28,9 @@ import pytest
 @pytest.fixture
 def seeded_db():
     """Init + seed the DAWA DB for context-building tests."""
-    from app.services.dawa_store import init_dawa_db, seed_demo_data
+    from app.services.dawa_store import init_dawa_db
     init_dawa_db()
-    seed_demo_data()
+    seed_test_patient()
 
 
 @pytest.fixture

@@ -34,6 +34,11 @@ import httpx
 from fastapi import HTTPException
 
 from app.config import UPLIFT_BASE_URL, settings
+from app.services.voice_catalog import (
+    PREVIEW_OUTPUT_FORMAT,
+    PREVIEW_PHRASE,
+    is_valid_voice,
+)
 
 logger = logging.getLogger("dawa.uplift")
 
@@ -404,6 +409,7 @@ async def create_assistant(
     name: str | None = None,
     medication_name: str = "آپ کی دوائی",
     profile: str = "hackathon",
+    voice_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Create a new Uplift realtime assistant.
@@ -440,10 +446,17 @@ async def create_assistant(
             "greetingInstructions": "السلام علیکم! میں DAWA کا ادویات یاد دہانی اسسٹنٹ ہوں۔",
         }
 
+    tts = dict(spec["tts"])
+    if voice_id:
+        # Bake the voice in at creation so a per-patient assistant never needs a
+        # PATCH before dialling — that PATCH is what makes a shared assistant
+        # race when two patients are called at the same moment.
+        tts["voiceId"] = voice_id
+
     config: dict[str, Any] = {
         "agent": agent,
         "stt": {"default": dict(spec["stt"])},
-        "tts": {"default": dict(spec["tts"])},
+        "tts": {"default": tts},
         "llm": {"default": dict(spec["llm"])},
     }
     if spec.get("sessionTtlSec"):
@@ -470,6 +483,122 @@ async def create_assistant(
     data = response.json()
     logger.info("UPLIFT_ASSISTANT_CREATED", extra={"assistantId": data.get("realtimeAssistantId")})
     return data
+
+
+# ---------------------------------------------------------------------------
+# Per-patient assistants
+# ---------------------------------------------------------------------------
+
+async def get_or_create_patient_assistant(patient: dict[str, Any]) -> str:
+    """
+    Return this patient's own Uplift assistant ID, creating it on first use.
+
+    Why per patient: voice is a property of the assistant, not of a call. With a
+    single shared assistant, honouring each patient's chosen voice means PATCHing
+    that assistant immediately before dialling — so two patients called at the
+    same moment race, and whoever PATCHes last decides what both of them hear.
+    Giving each patient their own assistant removes the shared mutable state
+    instead of trying to serialise access to it.
+
+    The ID is cached on the patient row, so this costs one create per patient
+    for the lifetime of the account, not one per call or one per restart.
+    """
+    from app.services import dawa_store  # noqa: PLC0415  (avoids circular import)
+
+    existing = patient.get("assistant_id")
+    if existing:
+        return str(existing)
+
+    patient_id = patient["id"]
+    voice_id = patient.get("preferred_voice_id") or DEFAULT_VOICE_ID
+    if not is_valid_voice(voice_id):
+        voice_id = DEFAULT_VOICE_ID
+
+    data = await create_assistant(
+        name=f"DAWA — {patient.get('name') or patient_id}",
+        profile="voice-v2",
+        voice_id=voice_id,
+    )
+    assistant_id = data.get("realtimeAssistantId")
+    if not assistant_id:
+        raise RuntimeError(
+            f"Uplift did not return a realtimeAssistantId for patient {patient_id!r}."
+        )
+
+    dawa_store.set_patient_assistant_id(patient_id, assistant_id)
+    logger.info(
+        "DAWA_PATIENT_ASSISTANT_CREATED patient=%s assistantId=%s voiceId=%s",
+        patient_id, assistant_id, voice_id,
+    )
+    return str(assistant_id)
+
+
+# ---------------------------------------------------------------------------
+# Phone-ownership verification call
+# ---------------------------------------------------------------------------
+
+_VERIFICATION_INSTRUCTIONS = """\
+VERIFICATION CALL — this is NOT a medication reminder.
+
+Say exactly this, in Urdu, and nothing else:
+"السلام علیکم۔ یہ DAWA کی تصدیقی کال ہے۔ آپ کا کوڈ ہے: {spoken}۔ دوبارہ سن لیجیے: {spoken}۔ شکریہ۔"
+
+Rules:
+- Read each digit separately, slowly, with a clear pause between digits.
+- Say the code exactly twice, then end the call.
+- Do NOT mention any medication. Do NOT ask any question.
+- If the person speaks, repeat only the code once more, then end the call.
+"""
+
+
+async def dispatch_verification_call(phone_e164: str, code: str) -> str:
+    """
+    Ring a number and speak a verification code aloud.
+
+    Uses the shared base assistant deliberately: a verification call happens
+    before the patient is confirmed, so creating a dedicated assistant for a
+    number that may never be verified would leak assistants on every typo.
+    Voice preference is irrelevant here — the call only reads digits.
+
+    Returns the Uplift call ID.
+    """
+    from app.services.phone_verification import mask_phone, spoken_code  # noqa: PLC0415
+
+    if not settings.uplift_assistant_id:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "UPLIFT_ASSISTANT_ID is not configured, so DAWA cannot place the "
+                "verification call. Run scripts/create_uplift_assistant.py first."
+            ),
+        )
+
+    spoken = spoken_code(code)
+    masked = mask_phone(phone_e164)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{UPLIFT_BASE_URL}/calls",
+            json={
+                "assistantId": settings.uplift_assistant_id,
+                "to": phone_e164,
+                "variables": {"verification_code": spoken},
+                "additionalInstructions": _VERIFICATION_INSTRUCTIONS.format(spoken=spoken),
+            },
+            headers={
+                **_auth_headers(),
+                # New key per send: a resend is a genuinely new call, and reusing
+                # the key would make Uplift silently dedupe it away.
+                "Idempotency-Key": str(uuid.uuid4()),
+            },
+        )
+
+    _raise_for_uplift_error(response)
+    data = response.json()
+    call_id = data.get("callId") or data.get("id") or data.get("sessionId") or "unknown"
+    # The code itself is never logged — only that a call went out.
+    logger.info("DAWA_VERIFICATION_CALL_SENT to=%s callId=%s", masked, call_id)
+    return str(call_id)
 
 
 # Maps medication_name -> realtimeAssistantId (future-phase in-process cache).
@@ -537,3 +666,85 @@ async def update_assistant_instructions(medication_name: str) -> None:
         "UPLIFT_ASSISTANT_UPDATED",
         extra={"assistantId": settings.uplift_assistant_id, "medication": medication_name},
     )
+
+
+# ---------------------------------------------------------------------------
+# P3 — DAWA voice selection
+# ---------------------------------------------------------------------------
+
+async def update_assistant_voice(voice_id: str, assistant_id: str | None = None) -> None:
+    """
+    Point the existing Voice V2 assistant at a different Uplift TTS voice.
+
+    Uses the documented partial-update endpoint
+    (POST /realtime-assistants/{id}, "only the fields you include will be
+    updated") so the agent instructions, greeting, STT and LLM configuration of
+    Voice V2 are left completely untouched.
+
+    The COMPLETE tts.default object is sent — not just voiceId — because nested
+    partial-merge semantics for a sub-object are not guaranteed, and a dropped
+    provider/outputFormat would break telephony audio.
+
+    Raises HTTPException if Uplift rejects the update, so the caller can avoid
+    persisting a voice the assistant is not actually using.
+    """
+    if not is_valid_voice(voice_id):
+        raise HTTPException(status_code=400, detail="Unknown DAWA voice.")
+
+    # Default to the shared base assistant so existing callers keep working;
+    # per-patient callers pass their own assistant and therefore cannot change
+    # what any other patient hears.
+    target = assistant_id or settings.uplift_assistant_id
+    if not target:
+        raise HTTPException(
+            status_code=503,
+            detail="UPLIFT_ASSISTANT_ID is not configured.",
+        )
+
+    payload = {
+        "config": {
+            "tts": {
+                "default": {
+                    "provider": "upliftai",
+                    "voiceId": voice_id,
+                    "outputFormat": "MP3_22050_32",
+                }
+            }
+        }
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{UPLIFT_BASE_URL}/realtime-assistants/{target}",
+            json=payload,
+            headers=_auth_headers(),
+        )
+
+    _raise_for_uplift_error(response)
+    logger.info("DAWA_VOICE_UPDATED voiceId=%s assistantId=%s", voice_id, target)
+
+
+async def synthesize_voice_preview(voice_id: str) -> bytes:
+    """
+    Synthesize the FIXED DAWA preview phrase in the given voice.
+
+    The phrase is a server-side constant — caregiver-supplied text is never
+    accepted here, so this endpoint cannot be used as a free TTS proxy.
+    Returns raw MP3 bytes.
+    """
+    if not is_valid_voice(voice_id):
+        raise HTTPException(status_code=400, detail="Unknown DAWA voice.")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{UPLIFT_BASE_URL}/synthesis/text-to-speech",
+            json={
+                "voiceId": voice_id,
+                "text": PREVIEW_PHRASE,
+                "outputFormat": PREVIEW_OUTPUT_FORMAT,
+            },
+            headers=_auth_headers(),
+        )
+
+    _raise_for_uplift_error(response)
+    return response.content

@@ -250,6 +250,22 @@ def _build_instructions(
         else ""
     )
 
+    # ── Caregiver-entered doctor note ───────────────────────────────────────
+    # Supporting context ONLY.  The structured fields above stay authoritative,
+    # and the assistant is told explicitly never to resolve a contradiction on
+    # its own — a wrong autonomous choice here would be a dosing error.
+    doctor_note = (medication.get("doctor_instructions") or "").strip()
+    doctor_block = ""
+    if doctor_note:
+        note = doctor_note if len(doctor_note) <= 220 else doctor_note[:217] + "..."
+        doctor_block = (
+            "\nDOCTOR NOTE (caregiver-entered supporting context, NOT authoritative)\n"
+            f"{note}\n"
+            "If this note conflicts with the structured fields above, do NOT choose "
+            "the note and do NOT choose for yourself — say the information needs "
+            "caregiver verification.\n"
+        )
+
     return (
         "VERIFIED FACTS (closed world — nothing outside this block is known)\n"
         f"patient_name: {name}\n"
@@ -268,6 +284,8 @@ def _build_instructions(
         "RESOLUTION RULES (for resolving an UNKNOWN medicine from patient cues)\n"
         f"{res_block}"
         f"{disc_question}\n"
+        "\n"
+        f"{doctor_block}"
         "\n"
         "SAFETY\n"
         f"dose-change claim -> confirm only «{dose_instr}», verify with caregiver\n"

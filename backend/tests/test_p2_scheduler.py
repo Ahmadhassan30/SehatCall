@@ -24,34 +24,40 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.conftest import seed_test_patient
+
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
 def seeded_db():
     """Init schema and seed demo data in the isolated test DB."""
-    from app.services.dawa_store import init_dawa_db, seed_demo_data
+    from app.services.dawa_store import init_dawa_db
+    from tests.conftest import TEST_CAREGIVER_ID
     init_dawa_db()
-    seed_demo_data()
+    seed_test_patient()
 
 
 @pytest.fixture(autouse=True)
 def reset_scheduler_module():
     """Reset module-level scheduler state before each test."""
     import app.services.scheduler as sched
-    original_lock = sched._dispatch_lock
     original_sched = sched._scheduler
-    sched._dispatch_lock = asyncio.Lock()
+    # Locks are per patient now and bound to the running event loop, so each
+    # test starts from an empty map rather than inheriting a stale lock.
+    sched._patient_locks.clear()
+    sched.reset_voice_cache()
     sched._scheduler = None
     yield
     if sched._scheduler and sched._scheduler.running:
         sched._scheduler.shutdown(wait=False)
     sched._scheduler = original_sched
-    sched._dispatch_lock = original_lock
+    sched._patient_locks.clear()
 
 
 def _make_p2_client(monkeypatch, *, assistant_id="asst-p2-test", phone="+923001234567"):
     """Create a P2 TestClient with controlled env vars and reloaded modules."""
     monkeypatch.setenv("UPLIFTAI_API_KEY", "test-api-key-p2")
+    monkeypatch.setenv("DAWA_INTERNAL_API_SECRET", "test-internal-secret-p4")
     if assistant_id:
         monkeypatch.setenv("UPLIFT_ASSISTANT_ID", assistant_id)
     else:
@@ -79,13 +85,15 @@ def _make_p2_client(monkeypatch, *, assistant_id="asst-p2-test", phone="+9230012
     importlib.reload(dawa_mod)
     importlib.reload(main_mod)
 
-    from app.services.dawa_store import init_dawa_db, seed_demo_data
+    from app.services.dawa_store import init_dawa_db
+    from tests.conftest import TEST_CAREGIVER_ID, TEST_AUTH_HEADERS
     init_dawa_db()
-    seed_demo_data()
-
+    seed_test_patient()
     from app.main import app
     from fastapi.testclient import TestClient
-    return TestClient(app)
+    c = TestClient(app)
+    c.headers.update(TEST_AUTH_HEADERS)
+    return c
 
 
 def _mock_uplift_dispatch():
@@ -220,8 +228,8 @@ def test_one_active_call_prevents_second_simultaneous_dispatch():
     dispatch_calls = []
 
     async def run():
-        lock = sched._get_lock()
-        # Simulate an active call by holding the lock
+        lock = sched._get_lock("razia-bibi")
+        # Simulate an active call by holding this patient's lock
         await lock.acquire()
 
         async def mock_dispatch(e, retry_count=0):
@@ -245,8 +253,6 @@ def test_pending_call_dispatches_after_lock_released():
     dispatch_calls = []
 
     async def run():
-        lock = sched._get_lock()
-
         # Simulate lock being free (no active call)
         async def mock_dispatch(e, retry_count=0):
             dispatch_calls.append(e["id"])
@@ -258,6 +264,46 @@ def test_pending_call_dispatches_after_lock_released():
 
     asyncio.get_event_loop().run_until_complete(run())
     assert dispatch_calls == [event["id"]], "Dispatch must proceed when lock is free"
+
+
+def test_one_patients_active_call_does_not_block_another_patient():
+    """
+    The multi-user guarantee: locks are per patient.
+
+    With a single global lock, one caregiver's in-flight call would silently
+    defer every other patient's reminder to a later scan. Two different
+    patients must be dialable at the same time.
+    """
+    from app.services import scheduler as sched, dawa_store
+    from tests.conftest import seed_test_patient
+
+    seed_test_patient(
+        owner_user_id="test-caregiver-2",
+        patient_id="patient-b",
+        phone="+923005555555",
+        with_medications=False,
+    )
+    event_b = dawa_store.create_dose_event(
+        "patient-b", "metformin-500", "21:00", call_status="due"
+    )
+    dispatched: list[str] = []
+
+    async def run():
+        # Patient A is mid-call.
+        await sched._get_lock("razia-bibi").acquire()
+
+        async def mock_dispatch(e, retry_count=0):
+            dispatched.append(e["patientId"])
+
+        with patch("app.services.scheduler.dispatch_call_via_uplift", new=mock_dispatch):
+            await sched._safe_dispatch(event_b, 0)
+
+        sched._get_lock("razia-bibi").release()
+
+    asyncio.get_event_loop().run_until_complete(run())
+    assert dispatched == ["patient-b"], (
+        "Patient B's reminder must go out even while patient A is on a call"
+    )
 
 
 # ─── 8–13  Retry policy ──────────────────────────────────────────────────────
@@ -336,8 +382,11 @@ def test_demo_endpoint_cannot_accept_destination_phone(monkeypatch):
 
 # ─── 17–19  Dispatch payload verification ─────────────────────────────────────
 
-def test_dispatch_uses_test_phone_number():
-    """dispatch_call_via_uplift must use TEST_PHONE_NUMBER from settings, not any arg."""
+def test_dispatch_calls_the_patients_own_verified_number():
+    """
+    DAWA dials the number stored on the patient, not a global test number and
+    not anything supplied by the caller.
+    """
     from app.services import dawa_store
     event = dawa_store.create_dose_event("razia-bibi", "metformin-500", "21:00")
     captured: dict = {}
@@ -350,7 +399,9 @@ def test_dispatch_uses_test_phone_number():
         with patch("app.services.scheduler.settings") as ms, \
              patch("app.services.scheduler.httpx.AsyncClient") as MC:
             ms.uplift_assistant_id = "asst-test"
-            ms.test_phone_number = "+923001234567"
+            # Deliberately different from the patient's number: if dispatch
+            # ever fell back to settings, this test would catch it.
+            ms.test_phone_number = "+920000000000"
             ms.upliftai_api_key = "key"
             mc = AsyncMock()
             mc.post = mock_post
@@ -360,11 +411,19 @@ def test_dispatch_uses_test_phone_number():
             await dispatch_call_via_uplift(event, 0)
 
     asyncio.get_event_loop().run_until_complete(run())
-    assert captured.get("to") == "+923001234567"
+    from tests.conftest import TEST_PATIENT_PHONE
+    assert captured.get("to") == TEST_PATIENT_PHONE
+    assert captured.get("to") != "+920000000000"
 
 
-def test_dispatch_uses_uplift_assistant_id():
-    """dispatch_call_via_uplift must use UPLIFT_ASSISTANT_ID from settings."""
+def test_dispatch_uses_the_patients_own_assistant():
+    """
+    Each patient dials through their OWN Uplift assistant, never a shared one.
+
+    Voice lives on the assistant, so a shared assistant means two patients
+    called at the same time can overwrite each other's voice. Per-patient
+    assistants remove the shared mutable state rather than serialising it.
+    """
     from app.services import dawa_store
     event = dawa_store.create_dose_event("razia-bibi", "metformin-500", "21:00")
     captured: dict = {}
@@ -387,7 +446,10 @@ def test_dispatch_uses_uplift_assistant_id():
             await dispatch_call_via_uplift(event, 0)
 
     asyncio.get_event_loop().run_until_complete(run())
-    assert captured.get("assistantId") == "asst-specific-id-xyz"
+    from tests.conftest import TEST_ASSISTANT_ID
+    # The globally-configured assistant is deliberately IGNORED for reminders.
+    assert captured.get("assistantId") == TEST_ASSISTANT_ID
+    assert captured.get("assistantId") != "asst-specific-id-xyz"
 
 
 def test_dispatch_uses_verified_call_context():

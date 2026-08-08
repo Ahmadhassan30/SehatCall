@@ -21,6 +21,8 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from tests.conftest import seed_test_patient
 from fastapi.testclient import TestClient
 
 
@@ -35,11 +37,10 @@ def seeded_db():
     This fixture runs for every test; safe because of the isolate_db autouse
     fixture in conftest.py (each test gets a fresh tmp SQLite file).
     """
-    from app.services.dawa_store import init_dawa_db, seed_demo_data
+    from app.services.dawa_store import init_dawa_db
+    from tests.conftest import TEST_CAREGIVER_ID
     init_dawa_db()
-    seed_demo_data()
-
-
+    seed_test_patient()
 def _make_p1_client(
     monkeypatch,
     *,
@@ -48,6 +49,7 @@ def _make_p1_client(
 ) -> TestClient:
     """Create a P1 TestClient with controlled env vars, reloading Settings."""
     monkeypatch.setenv("UPLIFTAI_API_KEY", "test-api-key-p1")
+    monkeypatch.setenv("DAWA_INTERNAL_API_SECRET", "test-internal-secret-p4")
     if assistant_id is not None:
         monkeypatch.setenv("UPLIFT_ASSISTANT_ID", assistant_id)
     else:
@@ -76,11 +78,13 @@ def _make_p1_client(
     importlib.reload(main_mod)
 
     from app.main import app  # noqa: PLC0415
-    # Seed again after reload so the fresh module references a seeded DB
-    from app.services.dawa_store import init_dawa_db, seed_demo_data  # noqa: PLC0415
+    from app.services.dawa_store import init_dawa_db  # noqa: PLC0415
+    from tests.conftest import TEST_CAREGIVER_ID, TEST_AUTH_HEADERS  # noqa: PLC0415
     init_dawa_db()
-    seed_demo_data()
-    return TestClient(app)
+    seed_test_patient()
+    c = TestClient(app)
+    c.headers.update(TEST_AUTH_HEADERS)
+    return c
 
 
 def _mock_uplift_call(call_id: str = "call-p1-test") -> MagicMock:
@@ -100,13 +104,53 @@ def _mock_uplift_call(call_id: str = "call-p1-test") -> MagicMock:
 # 1–3  Seed & demo data
 # ---------------------------------------------------------------------------
 
-def test_seed_is_idempotent():
-    """Calling seed_demo_data() twice must still produce exactly one razia-bibi."""
-    from app.services.dawa_store import seed_demo_data, get_all_patients
-    seed_demo_data()  # second call
-    patients = get_all_patients()
-    razia_rows = [p for p in patients if p["id"] == "razia-bibi"]
-    assert len(razia_rows) == 1, f"Expected exactly 1 razia-bibi row, got {len(razia_rows)}"
+def test_a_caregiver_can_only_ever_have_one_patient():
+    """
+    The one-patient-per-account rule is enforced by the database, not by a
+    check in the route — so a duplicate create cannot slip through a race.
+    """
+    from app.services.dawa_store import (
+        PatientAlreadyExists,
+        create_patient_for_owner,
+        get_all_patients,
+    )
+    from tests.conftest import TEST_CAREGIVER_ID
+
+    with pytest.raises(PatientAlreadyExists):
+        create_patient_for_owner(
+            owner_user_id=TEST_CAREGIVER_ID,
+            name="Second Patient",
+            preferred_address="Abbu",
+            phone_e164="+923009999999",
+        )
+
+    owned = [p for p in get_all_patients() if p["owner_user_id"] == TEST_CAREGIVER_ID]
+    assert len(owned) == 1, f"Expected exactly 1 owned patient, got {len(owned)}"
+
+
+def test_two_caregivers_get_separate_patients():
+    """
+    The core multi-user guarantee: a second caregiver creates their own record
+    rather than colliding with, or being locked out by, the first.
+    """
+    from app.services.dawa_store import create_patient_for_owner, get_patient_by_owner
+
+    created = create_patient_for_owner(
+        owner_user_id="test-caregiver-2",
+        name="Akbar Ali",
+        preferred_address="Abbu",
+        phone_e164="+923008888888",
+    )
+
+    assert created["id"] != "razia-bibi"
+    assert created["owner_user_id"] == "test-caregiver-2"
+    # A brand-new patient is never callable until the number is proved.
+    assert created["phone_verified_at"] is None
+
+    mine = get_patient_by_owner("test-caregiver-2")
+    theirs = get_patient_by_owner("test-caregiver-1")
+    assert mine is not None and theirs is not None
+    assert mine["id"] != theirs["id"]
 
 
 def test_demo_data_has_two_medications():
@@ -241,7 +285,7 @@ def test_instructions_within_documented_size_limit(mock_client_class, monkeypatc
 @patch("app.services.scheduler.httpx.AsyncClient")
 def test_demo_call_uses_uplift_assistant_id_not_request(mock_client_class, monkeypatch):
     """
-    demo-call must use UPLIFT_ASSISTANT_ID from server settings.
+    demo-call must use the patient's own assistant, chosen server-side.
     The caller cannot override it.
     """
     captured: dict = {}
@@ -265,7 +309,8 @@ def test_demo_call_uses_uplift_assistant_id_not_request(mock_client_class, monke
         json={"patientId": "razia-bibi", "medicationId": "metformin-500"},
     )
     assert response.status_code == 200
-    assert captured.get("assistantId") == "asst-p1-test-123"
+    from tests.conftest import TEST_ASSISTANT_ID
+    assert captured.get("assistantId") == TEST_ASSISTANT_ID
 
 
 @patch("app.services.scheduler.httpx.AsyncClient")

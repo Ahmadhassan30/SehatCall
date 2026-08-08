@@ -26,7 +26,7 @@ from fastapi import FastAPI
 
 from app.api.test_call import router as test_call_router
 from app.api.dawa import router as dawa_router
-from app.services.dawa_store import init_dawa_db, seed_demo_data
+from app.services.dawa_store import init_dawa_db
 from app.services import scheduler as sched
 
 # ---------------------------------------------------------------------------
@@ -47,11 +47,13 @@ logger = logging.getLogger("dawa")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialise DB, seed demo data, start scheduler on startup."""
-    logger.info("DAWA_STARTUP: initialising P1/P2 database tables")
+    """Initialise the DB and start the scheduler.
+
+    No data is seeded: every patient is created by a caregiver through the API,
+    so a fresh install starts genuinely empty.
+    """
+    logger.info("DAWA_STARTUP: initialising database tables")
     init_dawa_db()
-    seed_demo_data()
-    logger.info("DAWA_STARTUP: demo data ready (razia-bibi)")
 
     sched.start_scheduler()
 

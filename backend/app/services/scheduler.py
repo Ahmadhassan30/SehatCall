@@ -62,6 +62,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 from app.config import UPLIFT_BASE_URL, settings
 from app.services import dawa_store
 from app.services.call_context import build_call_context
+from app.services import voice_catalog
+from app.services import uplift as uplift_service
 
 logger = logging.getLogger("dawa.scheduler")
 
@@ -101,14 +103,33 @@ ACTIVE_CALL_STATUSES: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 
 _scheduler: AsyncIOScheduler | None = None
-_dispatch_lock: asyncio.Lock | None = None   # Created in start_scheduler()
+# One dispatch lock per patient, created on demand.
+#
+# A single global lock would serialise every caregiver's reminders: one patient
+# mid-call would silently defer everyone else's dose to the next scan. Calls to
+# different patients are genuinely independent, so they get independent locks.
+_patient_locks: dict[str, asyncio.Lock] = {}
 
 
-def _get_lock() -> asyncio.Lock:
-    global _dispatch_lock
-    if _dispatch_lock is None:
-        _dispatch_lock = asyncio.Lock()
-    return _dispatch_lock
+def _get_lock(patient_id: str) -> asyncio.Lock:
+    lock = _patient_locks.get(patient_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _patient_locks[patient_id] = lock
+    return lock
+
+
+def patient_lock(patient_id: str) -> asyncio.Lock:
+    """
+    The dispatch lock for one patient.
+
+    Every path that can place a call — scheduled or manual — must hold this
+    across the whole check-then-dial sequence. Checking for an active call
+    without it lets two concurrent requests both see "idle" and both dial.
+    Never acquired by dispatch_call_via_uplift itself, so callers cannot
+    deadlock on it.
+    """
+    return _get_lock(patient_id)
 
 
 # ---------------------------------------------------------------------------
@@ -117,8 +138,10 @@ def _get_lock() -> asyncio.Lock:
 
 def start_scheduler() -> None:
     """Start the APScheduler AsyncIOScheduler.  Call from FastAPI lifespan."""
-    global _scheduler, _dispatch_lock
-    _dispatch_lock = asyncio.Lock()
+    global _scheduler
+    # Locks belong to the running event loop; drop any created under a previous
+    # loop (notably between tests) so we never await a lock bound to a dead loop.
+    _patient_locks.clear()
     _scheduler = AsyncIOScheduler(timezone=KARACHI_TZ)
     _scheduler.add_job(
         _scan_due_medications,
@@ -188,38 +211,54 @@ def schedule_demo_call(
     return event
 
 
-def clear_pending_jobs() -> int:
-    """
-    Remove all pending scheduler jobs whose id starts with 'demo_'.
-    Used by the demo reset endpoint.
-    Returns the number of jobs removed.
-    """
-    if _scheduler is None:
-        return 0
-    jobs = _scheduler.get_jobs()
-    removed = 0
-    for job in jobs:
-        if job.id.startswith("demo_"):
-            job.remove()
-            removed += 1
-    if removed:
-        logger.info("DAWA_DEMO_RESET cleared %d pending scheduler job(s)", removed)
-    return removed
+def _job_belongs_to_patient(job_id: str, patient_id: str) -> bool:
+    """Demo job ids are 'demo_{dose_event_id}' — resolve the owner via the event."""
+    event = dawa_store.get_dose_event(job_id[len("demo_"):])
+    if not event:
+        return False
+    return (event.get("patientId") or event.get("patient_id")) == patient_id
 
 
-def get_pending_job_info() -> list[dict]:
-    """Return info about pending demo jobs (for demo state endpoint)."""
+def _pending_demo_jobs(patient_id: str | None) -> list:
+    """Queued demo jobs, restricted to one patient's when a patient is given."""
     if _scheduler is None:
         return []
-    jobs = []
-    for job in _scheduler.get_jobs():
-        if job.id.startswith("demo_"):
-            next_run = job.next_run_time
-            jobs.append({
-                "jobId": job.id,
-                "nextRunTime": next_run.isoformat() if next_run else None,
-            })
-    return jobs
+    jobs = [j for j in _scheduler.get_jobs() if j.id.startswith("demo_")]
+    if patient_id is None:
+        return jobs
+    return [j for j in jobs if _job_belongs_to_patient(j.id, patient_id)]
+
+
+def clear_pending_jobs(patient_id: str | None = None) -> int:
+    """
+    Remove queued demo jobs. Callers acting for a caregiver MUST pass
+    patient_id: an unscoped reset would cancel every other caregiver's queued
+    reminders too. patient_id=None is for process-wide teardown only.
+    Returns the number of jobs removed.
+    """
+    jobs = _pending_demo_jobs(patient_id)
+    for job in jobs:
+        job.remove()
+    if jobs:
+        logger.info(
+            "DAWA_DEMO_RESET cleared %d pending scheduler job(s) patient=%s",
+            len(jobs), patient_id or "ALL",
+        )
+    return len(jobs)
+
+
+def get_pending_job_info(patient_id: str | None = None) -> list[dict]:
+    """
+    Info about queued demo jobs, scoped to one patient when given — job
+    metadata for other caregivers' patients must not reach a caregiver.
+    """
+    return [
+        {
+            "jobId": job.id,
+            "nextRunTime": job.next_run_time.isoformat() if job.next_run_time else None,
+        }
+        for job in _pending_demo_jobs(patient_id)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -245,22 +284,36 @@ async def dispatch_call_via_uplift(
     Raises ValueError if required secrets are missing.
     Raises httpx.HTTPStatusError on Uplift rejection.
     """
-    if not settings.uplift_assistant_id:
-        raise ValueError(
-            "UPLIFT_ASSISTANT_ID not set. Run scripts/create_uplift_assistant.py first."
-        )
-    if not settings.test_phone_number:
-        raise ValueError("TEST_PHONE_NUMBER not set in Replit Secrets.")
-
     patient_id = dose_event["patientId"]
     medication_id = dose_event["medicationId"]
     event_id = dose_event["id"]
+
+    patient = dawa_store.get_patient(patient_id)
+    if not patient:
+        raise ValueError(f"Patient {patient_id!r} no longer exists.")
+
+    # The number to dial belongs to the patient, and must have been proved.
+    # This is the last line of defence: even if a dose event were created for an
+    # unverified patient, nothing reaches the telephony provider here.
+    phone = patient.get("phone_e164")
+    if not phone:
+        raise ValueError(f"Patient {patient_id!r} has no phone number.")
+    if not patient.get("phone_verified_at"):
+        raise ValueError(f"Patient {patient_id!r} has an unverified phone number.")
+
+    # Each patient dials through their own assistant, which already carries their
+    # chosen voice — so there is no voice PATCH in the dispatch path to race on.
+    assistant_id = await uplift_service.get_or_create_patient_assistant(patient)
 
     # Build verified call context (P1 path — unchanged)
     ctx = build_call_context(patient_id, medication_id)
 
     # Deterministic idempotency key prevents duplicate calls for same dose+attempt
     idempotency_key = f"{event_id}:attempt:{retry_count}"
+
+    # Correct any drift between the saved preference and the remote assistant.
+    # Safe to do per patient: it only ever touches this patient's own assistant.
+    await ensure_preferred_voice(patient_id)
 
     # Mark as calling BEFORE the network hop so the UI updates immediately
     dawa_store.update_dose_event(event_id, call_status="calling")
@@ -274,8 +327,8 @@ async def dispatch_call_via_uplift(
         response = await client.post(
             f"{UPLIFT_BASE_URL}/calls",
             json={
-                "assistantId": settings.uplift_assistant_id,
-                "to": settings.test_phone_number,
+                "assistantId": assistant_id,
+                "to": phone,
                 "variables": ctx.variables,
                 "additionalInstructions": ctx.additional_instructions,
             },
@@ -327,17 +380,20 @@ async def _scheduled_dispatch(dose_event_id: str, retry_count: int) -> None:
     await _safe_dispatch(event, retry_count)
 
 
-def has_active_call() -> bool:
+def has_active_call(patient_id: str | None = None) -> bool:
     """
-    Return True if any DAWA dose event is currently in a non-terminal telephony
+    Return True if a DAWA dose event is currently in a non-terminal telephony
     state (dispatched / dialing / ringing / answered).
+
+    Scoped to one patient when patient_id is given. Leaving it None keeps the
+    old global meaning, which is what the admin/debug surfaces still want.
 
     This is the PRIMARY active-call guard.  The asyncio.Lock alone is NOT
     sufficient because the Lock is released as soon as POST /calls returns
     'dispatched', while the actual telephone call remains active for seconds
     or minutes longer (dialing → ringing → answered → completed/failed).
     """
-    return bool(dawa_store.get_active_dose_events())
+    return bool(dawa_store.get_active_dose_events(patient_id))
 
 
 async def _safe_dispatch(dose_event: dict, retry_count: int) -> None:
@@ -355,8 +411,12 @@ async def _safe_dispatch(dose_event: dict, retry_count: int) -> None:
         at the exact same moment.  Checked ONLY after Layer 1 passes, and
         re-verified after acquisition (double-checked locking).
     """
+    patient_id = dose_event["patientId"]
+
     # ── Layer 1: DB-based active-call check (primary guard) ──────────────
-    if has_active_call():
+    # Scoped to this patient: an elderly patient should never receive two
+    # overlapping calls, but two different patients may be called at once.
+    if has_active_call(patient_id):
         logger.info(
             "DAWA_CALL_QUEUED event=%s — active call in non-terminal state, next scan will retry",
             dose_event["id"],
@@ -364,7 +424,7 @@ async def _safe_dispatch(dose_event: dict, retry_count: int) -> None:
         return
 
     # ── Layer 2: asyncio.Lock (secondary race-condition guard) ────────────
-    lock = _get_lock()
+    lock = _get_lock(patient_id)
     if lock.locked():
         logger.info(
             "DAWA_CALL_QUEUED event=%s — dispatch lock held by concurrent coroutine",
@@ -373,7 +433,7 @@ async def _safe_dispatch(dose_event: dict, retry_count: int) -> None:
         return
     async with lock:
         # Double-check: another coroutine may have slipped in between lock check and acquire
-        if has_active_call():
+        if has_active_call(patient_id):
             logger.info(
                 "DAWA_CALL_QUEUED event=%s — active call detected after lock acquire",
                 dose_event["id"],
@@ -396,31 +456,55 @@ async def _scan_due_medications(now_override: datetime | None = None) -> None:
        against each medication's scheduled_time (HH:MM).
     """
     now = now_override or datetime.now(KARACHI_TZ)
-    lock = _get_lock()
 
-    # ── Step 1: Update status of active calls ────────────────────────────
-    active_events = dawa_store.get_active_dose_events()
-    for ev in active_events:
+    # ── Step 1: Update status of active calls (all patients) ─────────────
+    # Status refresh is per dose event and touches no shared state, so it is
+    # safe and cheaper to do in one pass rather than per patient.
+    for ev in dawa_store.get_active_dose_events():
         if ev.get("callId"):
             await _refresh_call_status_from_uplift(ev)
 
-    # If a call is still active, skip dispatch
-    if lock.locked():
+    # ── Step 2: Per-patient dispatch ─────────────────────────────────────
+    # Only patients with a verified phone are considered — an unverified number
+    # never even reaches the due-medication logic.
+    for patient in dawa_store.get_patients_with_verified_phone():
+        try:
+            await _scan_patient_for_due_medications(patient, now)
+        except Exception:
+            # One caregiver's bad data must never stop every other patient's
+            # reminders. Log it and carry on with the next patient.
+            logger.exception(
+                "DAWA_SCAN_PATIENT_FAILED patient=%s", patient.get("id")
+            )
+
+
+async def _scan_patient_for_due_medications(patient: dict, now: datetime) -> None:
+    """Dispatch queued or newly-due doses for exactly one patient."""
+    patient_id = patient["id"]
+
+    # Skip this patient if they already have a call in flight; other patients
+    # in the same scan are unaffected.
+    if _get_lock(patient_id).locked():
         return
-    still_active = dawa_store.get_active_dose_events()
-    if still_active:
+    if dawa_store.get_active_dose_events(patient_id):
         return
 
-    # ── Step 2: Dispatch any pending dose events ─────────────────────────
-    pending = dawa_store.get_pending_dose_events()
+    # ── Queued doses first ───────────────────────────────────────────────
+    pending = dawa_store.get_pending_dose_events(patient_id)
     if pending:
         event = pending[0]
         logger.info("DAWA_DOSE_DUE event=%s (pending dispatch)", event["id"])
         await _safe_dispatch(event, event.get("retryCount", 0) or 0)
         return
 
-    # ── Step 3: Auto-detect due medications ──────────────────────────────
-    medications = dawa_store.get_medications_for_patient("razia-bibi")
+    # ── Auto-detect due medications ──────────────────────────────────────
+    # Only ACTIVE medications with auto-calling switched on are eligible.
+    # A caregiver turning auto-call off must stop future automatic dispatches
+    # while leaving manual "Call now" working.
+    medications = [
+        m for m in dawa_store.get_medications_for_patient(patient_id)
+        if is_auto_call_eligible(m)
+    ]
     today = now.date()
 
     for med in medications:
@@ -437,21 +521,55 @@ async def _scan_due_medications(now_override: datetime | None = None) -> None:
         # Due window: [scheduled_time, scheduled_time + 5 min)
         if scheduled_dt <= now < scheduled_dt + timedelta(minutes=5):
             schedule_key = _make_schedule_key(
-                "razia-bibi", med["id"], today.isoformat(), med["schedule_time"]
+                patient_id, med["id"], today.isoformat(), med["schedule_time"]
             )
             event, created = dawa_store.get_or_create_scheduled_dose_event(
                 schedule_key=schedule_key,
-                patient_id="razia-bibi",
+                patient_id=patient_id,
                 medication_id=med["id"],
                 scheduled_time=scheduled_dt.isoformat(),
             )
             if created:
                 dawa_store.update_dose_event(event["id"], call_status="due")
                 logger.info(
-                    "DAWA_DOSE_DUE auto-detected med=%s event=%s",
-                    med["id"], event["id"],
+                    "DAWA_DOSE_DUE auto-detected patient=%s med=%s event=%s",
+                    patient_id, med["id"], event["id"],
                 )
                 await _safe_dispatch(event, 0)
+                # One call at a time per patient: leave the rest queued for the
+                # next scan rather than dialling twice in a row.
+                return
+
+
+def assistant_id_for_event(event: dict) -> str | None:
+    """
+    The assistant a dose event's call actually ran on.
+
+    Calls go out through the *patient's own* assistant, so status has to be read
+    back from that same assistant. Querying the global one finds nothing, which
+    leaves the event stuck in a non-terminal state forever — and because an
+    active call blocks that patient, their next reminder would never dispatch.
+    """
+    patient_id = event.get("patientId") or event.get("patient_id")
+    patient = dawa_store.get_patient(patient_id) if patient_id else None
+    if patient and patient.get("assistant_id"):
+        return patient["assistant_id"]
+    # Events predating per-patient assistants ran on the shared one.
+    return settings.uplift_assistant_id or None
+
+
+async def fetch_recent_sessions(assistant_id: str, limit: int = 20) -> list[dict]:
+    """Recent Uplift sessions for one assistant, or [] if unavailable."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            f"{UPLIFT_BASE_URL}/realtime-assistants/{assistant_id}/sessions",
+            params={"limit": limit},
+            headers={"Authorization": f"Bearer {settings.upliftai_api_key}"},
+        )
+    if not resp.is_success:
+        return []
+    data = resp.json()
+    return data if isinstance(data, list) else data.get("sessions", [])
 
 
 async def _refresh_call_status_from_uplift(event: dict) -> None:
@@ -461,20 +579,12 @@ async def _refresh_call_status_from_uplift(event: dict) -> None:
     Does not retry — that is handled by _check_call_status_and_maybe_retry.
     """
     call_id = event.get("callId")
-    if not call_id or not settings.uplift_assistant_id:
+    assistant_id = assistant_id_for_event(event)
+    if not call_id or not assistant_id:
         return
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{UPLIFT_BASE_URL}/realtime-assistants/{settings.uplift_assistant_id}/sessions",
-                params={"limit": 20},
-                headers={"Authorization": f"Bearer {settings.upliftai_api_key}"},
-            )
-        if not resp.is_success:
-            return
-        data = resp.json()
-        sessions = data if isinstance(data, list) else data.get("sessions", [])
+        sessions = await fetch_recent_sessions(assistant_id)
         session = _find_session_for_call(sessions, call_id)
         if not session:
             return
@@ -506,25 +616,19 @@ async def _check_call_status_and_maybe_retry(
 
     failure_reason: str | None = None
 
-    if settings.uplift_assistant_id:
+    # Read status back from the assistant the call actually went out on.
+    assistant_id = assistant_id_for_event(event)
+    if assistant_id:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    f"{UPLIFT_BASE_URL}/realtime-assistants/{settings.uplift_assistant_id}/sessions",
-                    params={"limit": 20},
-                    headers={"Authorization": f"Bearer {settings.upliftai_api_key}"},
+            sessions = await fetch_recent_sessions(assistant_id)
+            session = _find_session_for_call(sessions, call_id)
+            if session:
+                failure_reason = (
+                    session.get("failureReason") or session.get("failure_reason")
                 )
-            if resp.is_success:
-                data = resp.json()
-                sessions = data if isinstance(data, list) else data.get("sessions", [])
-                session = _find_session_for_call(sessions, call_id)
-                if session:
-                    failure_reason = (
-                        session.get("failureReason") or session.get("failure_reason")
-                    )
-                    new_status = _derive_call_status(session)
-                    if new_status:
-                        dawa_store.update_dose_event(event_id, call_status=new_status)
+                new_status = _derive_call_status(session)
+                if new_status:
+                    dawa_store.update_dose_event(event_id, call_status=new_status)
         except Exception as exc:
             logger.debug("_check_call_status_and_maybe_retry: %s", exc)
 
@@ -629,3 +733,138 @@ def _mask_call_id(call_id: str) -> str:
     if len(call_id) <= 8:
         return "***"
     return call_id[:8] + "***"
+
+
+# ---------------------------------------------------------------------------
+# P3 — auto-call eligibility, next-call computation, voice drift safety
+# ---------------------------------------------------------------------------
+
+def is_auto_call_eligible(medication: dict) -> bool:
+    """
+    A medication is automatically called only when it is active AND the
+    caregiver has left automatic calling switched on.
+
+    Manual "Call now" deliberately does NOT consult this — a caregiver can
+    always place a call by hand.
+    """
+    return bool(medication.get("active", 1)) and bool(
+        medication.get("auto_call_enabled", 1)
+    )
+
+
+def compute_next_call(
+    patient_id: str,
+    now: datetime | None = None,
+) -> dict | None:
+    """
+    Return the next eligible upcoming automatic medication call.
+
+    Authoritative: the UI must never compute scheduling truth itself.
+    All arithmetic happens in Asia/Karachi.  If today's time has already
+    passed, the occurrence rolls to tomorrow.
+
+    Returns None when the patient has no auto-call-eligible medication.
+    """
+    current = now or datetime.now(KARACHI_TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=KARACHI_TZ)
+    else:
+        current = current.astimezone(KARACHI_TZ)
+
+    best: tuple[datetime, dict] | None = None
+
+    for med in dawa_store.get_medications_for_patient(patient_id):
+        if not is_auto_call_eligible(med):
+            continue
+        try:
+            hh, mm = str(med["schedule_time"]).split(":")
+            candidate = current.replace(
+                hour=int(hh), minute=int(mm), second=0, microsecond=0
+            )
+        except Exception:
+            continue  # malformed schedule_time is skipped, never guessed
+
+        # Today's slot already passed → next occurrence is tomorrow
+        if candidate <= current:
+            candidate = candidate + timedelta(days=1)
+
+        if best is None or candidate < best[0]:
+            best = (candidate, med)
+
+    if best is None:
+        return None
+
+    when, med = best
+    return {
+        "medicationId": med["id"],
+        "nickname": med.get("nickname") or med["clinical_name"],
+        "clinicalName": med["clinical_name"],
+        "dosage": med["dosage"],
+        "scheduleTime": med["schedule_time"],
+        "scheduledFor": when.isoformat(),
+        "secondsUntil": max(0, int((when - current).total_seconds())),
+        "autoCallEnabled": bool(med.get("auto_call_enabled", 1)),
+    }
+
+
+# Last voice successfully applied to each patient's assistant this process.
+# Keyed by patient: a single shared value would let one patient's sync suppress
+# another patient's, leaving the second patient on the wrong voice.
+_applied_voice_id: dict[str, str] = {}
+
+
+def reset_voice_cache(patient_id: str | None = None) -> None:
+    """
+    Clear the applied-voice cache for one patient, or all of them.
+
+    Callers acting for a caregiver should pass patient_id: clearing the whole
+    map would force a redundant voice re-check on every other patient's next
+    call.
+    """
+    if patient_id is None:
+        _applied_voice_id.clear()
+    else:
+        _applied_voice_id.pop(patient_id, None)
+
+
+async def ensure_preferred_voice(patient_id: str) -> str | None:
+    """
+    Make this patient's own Uplift assistant speak in their chosen voice.
+
+    Guards against drift between patient.preferred_voice_id and the remote
+    assistant without rebuilding the assistant or touching the Voice V2 prompt.
+
+    Only ever PATCHes the assistant belonging to this patient, so concurrent
+    calls to different patients cannot overwrite each other's voice. No-ops when
+    the voice is already known to match, so a normal call costs zero extra
+    Uplift requests.
+    """
+    patient = dawa_store.get_patient(patient_id)
+    if not patient:
+        return None
+    desired = patient.get("preferred_voice_id")
+    if not desired or not voice_catalog.is_valid_voice(desired):
+        return None
+    if _applied_voice_id.get(patient_id) == desired:
+        return desired
+
+    assistant_id = patient.get("assistant_id")
+    if not assistant_id:
+        # No assistant yet — it will be created with this voice baked in on the
+        # first dispatch, so there is nothing to correct.
+        return desired
+
+    try:
+        await uplift_service.update_assistant_voice(desired, assistant_id=assistant_id)
+        _applied_voice_id[patient_id] = desired
+        logger.info(
+            "DAWA_VOICE_SYNCED patient=%s voiceId=%s", patient_id, desired
+        )
+    except Exception as exc:
+        # A voice mismatch must never block a medication reminder — the call
+        # still goes out, just in the assistant's current voice.
+        logger.warning(
+            "DAWA_VOICE_SYNC_FAILED patient=%s voiceId=%s error=%s",
+            patient_id, desired, exc,
+        )
+    return desired

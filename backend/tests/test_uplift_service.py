@@ -16,6 +16,8 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from tests.conftest import seed_test_patient
 from fastapi.testclient import TestClient
 
 
@@ -442,9 +444,9 @@ def test_parser_terminal_states():
 @pytest.fixture()
 def _seeded_dawa_db():
     """Init + seed the DAWA DB for tests that need it."""
-    from app.services.dawa_store import init_dawa_db, seed_demo_data
+    from app.services.dawa_store import init_dawa_db
     init_dawa_db()
-    seed_demo_data()
+    seed_test_patient()
 
 
 def test_parser_completed_removes_active_call_barrier(_seeded_dawa_db):

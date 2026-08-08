@@ -55,3 +55,42 @@ Thumbs.db
 data/calls.db
 data/calls.db-shm
 data/calls.db-wal
+
+# ============================================
+# Local environment / secrets
+# ============================================
+.env
+.env.*
+!.env.example
+
+# ============================================
+# Runtime databases — NEVER COMMIT
+# ============================================
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ============================================
+# Expo / Node
+# ============================================
+node_modules/
+.expo/
+.expo-shared/
+
+# ============================================
+# Replit Agent internal artifacts
+# ============================================
+.agents/
+attached_assets/
