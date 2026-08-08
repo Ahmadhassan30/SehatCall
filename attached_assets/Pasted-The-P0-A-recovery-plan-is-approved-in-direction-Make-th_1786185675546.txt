@@ -1,0 +1,84 @@
+The P0-A recovery plan is approved in direction.
+
+Make these final corrections before implementation:
+
+1. FUTURE ROUTE ISOLATION
+
+Do not leave future-phase endpoints registered inside the canonical
+P0-A router merely with comments.
+
+backend/app/api/test_call.py must contain ONLY the P0-A routes:
+
+GET  /health remains in main.py
+POST /api/test-call
+GET  /api/test-call/status
+
+Move or preserve the following future-phase code separately:
+
+GET  /api/call-log
+POST /api/webhook/call-complete
+admin-token logic
+adherence parsing
+SQLite-dependent behavior
+
+For example:
+
+backend/app/api/future_calls.py
+
+The future router must NOT be included in the FastAPI application during
+P0-A.
+
+Preserve the code if useful, but it must be unreachable and unregistered.
+
+The canonical P0-A router must not import call_store, webhook logic,
+adherence parsing, admin authentication, or medication-specific models.
+
+2. UPLIFT SERVICE PURITY
+
+The canonical P0-A dispatch_call() must do only:
+
+- validate UPLIFT_ASSISTANT_ID
+- validate TEST_PHONE_NUMBER
+- generate Idempotency-Key
+- POST to Uplift /calls
+- return callId + status
+
+It must never:
+- create an assistant dynamically
+- inspect medication
+- write SQLite
+- write adherence
+- access call history
+
+Preserve future helper functions separately if necessary, but they must
+not participate in dispatch_call().
+
+3. BOOTSTRAP VALIDATION
+
+During this conformance task, do NOT create another real remote Uplift
+assistant.
+
+Validate the bootstrap path using mocked HTTP:
+
+- correct Singapore endpoint
+- correct assistant payload
+- exactly one POST /realtime-assistants
+- realtimeAssistantId is parsed
+- no POST /calls occurs
+
+After this audit is approved, the developer will run the bootstrap script
+manually against the real Uplift API.
+
+4. NO REAL EXTERNAL SIDE EFFECTS
+
+This task may not:
+- place a real call
+- create a real assistant
+- consume Uplift calling/session credits
+
+All external Uplift interactions in tests/audit must be mocked.
+
+Everything else in the revised recovery plan remains approved.
+
+Implement the recovery, run the full test suite, then STOP and provide
+the requested P0-A Conformance Audit report.
