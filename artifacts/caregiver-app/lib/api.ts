@@ -14,6 +14,7 @@ import * as SecureStore from "expo-secure-store";
 
 /** Must match the storagePrefix used in lib/auth-client.ts */
 const COOKIE_STORE_KEY = "dawa_cookie";
+const DEFAULT_TIMEOUT_MS = 45_000;
 
 /**
  * Read the Better Auth session cookie from SecureStore and format it
@@ -66,5 +67,32 @@ export async function apiFetch(
     headers.set("Cookie", cookie);
   }
 
-  return fetch(`${baseUrl}${path}`, { ...options, headers });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const signal = options.signal;
+  const abortFromCaller = () => controller.abort();
+
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener("abort", abortFromCaller, { once: true });
+    }
+  }
+
+  try {
+    return await fetch(`${baseUrl}${path}`, {
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted && !signal?.aborted) {
+      throw new Error("The request timed out. Please check that the local servers and tunnel are running, then try again.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromCaller);
+  }
 }

@@ -19,6 +19,7 @@ export NODE_ENV="${NODE_ENV:-development}"
 export DAWA_BACKEND_URL="${DAWA_BACKEND_URL:-http://localhost:8000}"
 export BETTER_AUTH_DB_DIR="${BETTER_AUTH_DB_DIR:-$ROOT/data}"
 export LOG_LEVEL="${LOG_LEVEL:-INFO}"
+export DAWA_FORCE_GOOGLE_OAUTH_IPV4="${DAWA_FORCE_GOOGLE_OAUTH_IPV4:-true}"
 
 missing=()
 for name in \

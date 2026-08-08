@@ -72,7 +72,7 @@ export default function OnboardingScreen() {
     if (!patient) return;
     setName((v) => v || patient.name);
     setAddress((v) => v || patient.preferredAddress);
-    if (!patient.phoneVerified && patient.maskedPhone) {
+    if (!patient.phoneVerified && patient.phoneVerificationInProgress && patient.maskedPhone) {
       setMaskedPhone(patient.maskedPhone);
       setStep('verify');
     }

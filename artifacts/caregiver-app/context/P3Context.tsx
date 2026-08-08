@@ -27,6 +27,8 @@ export interface P3Patient {
   maskedPhone: string | null;
   /** Until this is true, DAWA will not place any reminder call. */
   phoneVerified: boolean;
+  /** True only while the server has an active phone-code challenge. */
+  phoneVerificationInProgress: boolean;
   preferredVoiceId: string | null;
   preferredVoiceName: string | null;
 }
@@ -208,8 +210,22 @@ export function P3Provider({ children }: { children: React.ReactNode }) {
       // apiFetch attaches the Better Auth session cookie from SecureStore.
       // It throws immediately if apiBaseUrl is empty.
       const res = await apiFetch(apiBaseUrl, path, options);
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error((body as { detail?: string }).detail ?? `Server error ${res.status}`);
+      const text = await res.text();
+      let body: any = {};
+      try {
+        body = text ? JSON.parse(text) : {};
+      } catch {
+        body = {};
+      }
+      if (!res.ok) {
+        const message =
+          body.detail ??
+          body.message ??
+          body.error ??
+          (text.trim() ? text.trim().slice(0, 240) : undefined) ??
+          `Server error ${res.status}`;
+        throw new Error(String(message));
+      }
       return body;
     },
     [apiBaseUrl]

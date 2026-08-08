@@ -83,8 +83,9 @@ def _raise_for_uplift_error(response: httpx.Response) -> None:
         uplift_message = response.text or "(no body)"
 
     logger.warning(
-        "UPLIFT_API_ERROR",
-        extra={"http_status": status, "uplift_message": uplift_message},
+        "UPLIFT_API_ERROR status=%s message=%s",
+        status,
+        uplift_message[:500],
     )
 
     error_map: dict[int, tuple[int, str]] = {
@@ -575,16 +576,24 @@ async def dispatch_verification_call(phone_e164: str, code: str) -> str:
 
     spoken = spoken_code(code)
     masked = mask_phone(phone_e164)
+    instructions = _VERIFICATION_INSTRUCTIONS.format(spoken=spoken)
+    payload = {
+        "assistantId": settings.uplift_assistant_id,
+        "to": phone_e164,
+        "additionalInstructions": instructions,
+    }
+
+    logger.info(
+        "DAWA_VERIFICATION_CALL_REQUESTED to=%s payloadKeys=%s instructionsChars=%d",
+        masked,
+        sorted(payload.keys()),
+        len(instructions),
+    )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             f"{UPLIFT_BASE_URL}/calls",
-            json={
-                "assistantId": settings.uplift_assistant_id,
-                "to": phone_e164,
-                "variables": {"verification_code": spoken},
-                "additionalInstructions": _VERIFICATION_INSTRUCTIONS.format(spoken=spoken),
-            },
+            json=payload,
             headers={
                 **_auth_headers(),
                 # New key per send: a resend is a genuinely new call, and reusing

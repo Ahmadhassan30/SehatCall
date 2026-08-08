@@ -116,6 +116,7 @@ def test_04_caregiver_creates_their_own_patient(client):
     assert data["name"] == "Razia Bibi"
     # Calling is locked until the number is proved.
     assert data["phoneVerified"] is False
+    assert data["phoneVerificationInProgress"] is False
 
 
 # ---------------------------------------------------------------------------

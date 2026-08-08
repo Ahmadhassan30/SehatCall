@@ -1,6 +1,10 @@
-import app from "./app.js";
-import { auth, authOptions } from "./lib/auth.js";
-import { logger } from "./lib/logger.js";
+import { installGoogleOAuthIpv4Lookup } from "./lib/node-network.js";
+
+installGoogleOAuthIpv4Lookup();
+
+const { default: app } = await import("./app.js");
+const { auth, authOptions } = await import("./lib/auth.js");
+const { logger } = await import("./lib/logger.js");
 
 const rawPort = process.env["PORT"];
 

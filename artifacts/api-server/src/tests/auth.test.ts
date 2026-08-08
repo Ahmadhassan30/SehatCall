@@ -9,6 +9,7 @@
  *  5. Express 5 /api/auth/*splat actually reaches Better Auth handler
  *  6. client-supplied X-DAWA-CAREGIVER-ID is stripped
  *  7. client-supplied X-DAWA-INTERNAL-SECRET is stripped
+ *  8. parsed JSON POST bodies are forwarded to FastAPI
  *
  * Uses factory functions (createApp / makeRequireSession / makeProxyToPython)
  * so no module mocking or process.env manipulation is required.
@@ -52,6 +53,7 @@ const authHandlerSpy = vi.fn((_req: any, res: any) => {
 
 let mockBackend: Server;
 let lastRequestHeaders: Record<string, string | string[] | undefined> = {};
+let lastRequestBody = "";
 
 // ── App instances (built once in beforeAll) ───────────────────────────────────
 
@@ -63,8 +65,13 @@ beforeAll(async () => {
   // Start the mock backend on a random port
   mockBackend = createServer((req, res) => {
     lastRequestHeaders = { ...req.headers };
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end("{}");
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      lastRequestBody = Buffer.concat(chunks).toString("utf8");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
   });
   await new Promise<void>((resolve) => mockBackend.listen(0, "127.0.0.1", resolve));
   const backendUrl = `http://127.0.0.1:${(mockBackend.address() as AddressInfo).port}`;
@@ -170,5 +177,18 @@ describe("header stripping (client-supplied identity headers)", () => {
     expect(lastRequestHeaders["x-dawa-internal-secret"]).not.toBe("evil-secret");
     // Must inject the server-authoritative secret
     expect(lastRequestHeaders["x-dawa-internal-secret"]).toBe(MOCK_INTERNAL_SECRET);
+  });
+
+  it("8. parsed JSON POST body is forwarded to FastAPI", async () => {
+    lastRequestBody = "";
+    await request(sessionApp)
+      .post("/api/dawa/patient")
+      .send({ name: "Test Patient", preferredAddress: "Ammi" })
+      .expect(200);
+
+    expect(JSON.parse(lastRequestBody)).toEqual({
+      name: "Test Patient",
+      preferredAddress: "Ammi",
+    });
   });
 });

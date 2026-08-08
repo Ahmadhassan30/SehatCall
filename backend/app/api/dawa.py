@@ -654,6 +654,7 @@ def _serialise_patient(patient: dict) -> dict:
     leaves the server — a stolen session should not yield a readable phone book.
     """
     phone = patient.get("phone_e164")
+    verification = dawa_store.get_phone_verification(patient["id"])
     return {
         "id": patient["id"],
         "name": patient["name"],
@@ -662,6 +663,7 @@ def _serialise_patient(patient: dict) -> dict:
         "literacyMode": patient.get("literacy_mode", "voice_first"),
         "maskedPhone": pv.mask_phone(phone) if phone else None,
         "phoneVerified": bool(patient.get("phone_verified_at")),
+        "phoneVerificationInProgress": bool(verification),
         "preferredVoiceId": patient.get("preferred_voice_id"),
         "preferredVoiceName": (
             patient.get("preferred_voice_name")
