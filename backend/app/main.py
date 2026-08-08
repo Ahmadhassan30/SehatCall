@@ -17,6 +17,7 @@ import sys
 from fastapi import FastAPI
 
 from app.api.test_call import router as test_call_router
+from app.services.call_store import init_db
 
 # ---------------------------------------------------------------------------
 # Logging — structured JSON-friendly output
@@ -38,6 +39,9 @@ app = FastAPI(
     description="Uplift AI phone call integration spike — Urdu outbound calls to Pakistan",
     version="0.1.0",
 )
+
+# Initialise persistent call store on startup (idempotent — safe to call every boot)
+init_db()
 
 app.include_router(test_call_router)
 

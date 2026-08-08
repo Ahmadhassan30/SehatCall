@@ -397,6 +397,59 @@ def test_session_normalisation(mock_client_class, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Security: unauthenticated status endpoint must not expose sensitive data
+# ---------------------------------------------------------------------------
+
+@patch("app.services.uplift.httpx.AsyncClient")
+def test_status_does_not_expose_medication_or_phone(mock_client_class, monkeypatch):
+    """
+    GET /api/test-call/status is unauthenticated and must never return
+    medication names or phone numbers — even when local persisted records
+    are merged into the response.
+
+    A caller who has previously dispatched a call must not be able to retrieve
+    medication history or phone metadata via this public endpoint.
+    """
+    client = _make_client(monkeypatch)
+
+    # Step 1: dispatch a real call so a local record is written to the store
+    mock_client_class.return_value = _mock_http(call_body={"callId": "call-sensitive"})
+    dispatch_resp = client.post(
+        "/api/test-call",
+        json={"medication_name": "SensitiveDrug"},
+        headers=ADMIN_HEADER,
+    )
+    assert dispatch_resp.status_code == 200
+
+    # Step 2: simulate the status endpoint returning an empty Uplift response
+    # so the local record must be merged in to produce any output at all
+    mock_status = MagicMock()
+    mock_status.status_code = 200
+    mock_status.is_success = True
+    mock_status.json.return_value = {"sessions": []}
+    mock_status.text = '{"sessions": []}'
+
+    mock_http_get = AsyncMock()
+    mock_http_get.__aenter__ = AsyncMock(return_value=mock_http_get)
+    mock_http_get.__aexit__ = AsyncMock(return_value=False)
+    mock_http_get.get = AsyncMock(return_value=mock_status)
+    mock_client_class.return_value = mock_http_get
+
+    status_resp = client.get("/api/test-call/status")
+    assert status_resp.status_code == 200
+    sessions = status_resp.json()
+
+    # The local record should appear but must NOT carry sensitive fields
+    for session in sessions:
+        assert "medication" not in session, (
+            "medication must not be exposed on the unauthenticated status endpoint"
+        )
+        assert "phoneMasked" not in session, (
+            "phoneMasked must not be exposed on the unauthenticated status endpoint"
+        )
+
+
+# ---------------------------------------------------------------------------
 # update_assistant_instructions
 # ---------------------------------------------------------------------------
 

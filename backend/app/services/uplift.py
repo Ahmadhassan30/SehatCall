@@ -12,44 +12,24 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 from fastapi import HTTPException
 
 from app.config import UPLIFT_BASE_URL, settings
+from app.services.call_store import append_call, get_all_calls
 
 logger = logging.getLogger("dawa.uplift")
 
 
-# ---------------------------------------------------------------------------
-# In-memory call log (P0-B — no database yet)
-# ---------------------------------------------------------------------------
-
-# Each entry: {"logId": str, "callId": str, "medication": str, "dispatchedAt": str, "status": str}
-_call_log: list[dict[str, Any]] = []
+def get_call_log() -> list[dict]:
+    """Return persisted call log from SQLite, most-recent first."""
+    return get_all_calls(limit=50)
 
 
-def get_call_log() -> list[dict[str, Any]]:
-    """Return a copy of the in-memory call log, most-recent first."""
-    return list(reversed(_call_log))
-
-
-def _append_call_log(log_id: str, call_id: str, medication: str) -> None:
-    _call_log.append(
-        {
-            "logId": log_id,
-            "callId": call_id,
-            "medication": medication,
-            "dispatchedAt": datetime.now(timezone.utc).isoformat(),
-            "status": "dispatched",
-        }
-    )
-    logger.info(
-        "CALL_LOG_APPENDED",
-        extra={"logId": log_id, "callId": call_id, "medication": medication},
-    )
+def _append_call_log(log_id: str, call_id: str, medication: str, phone_masked: str = "") -> None:
+    append_call(log_id=log_id, call_id=call_id, medication=medication, phone_masked=phone_masked)
 
 
 # ---------------------------------------------------------------------------
@@ -323,8 +303,8 @@ async def dispatch_call(medication_name: str = "آپ کی دوائی") -> dict[s
         extra={"callId": call_id, "to": masked, "medication": medication_name},
     )
 
-    # Record in call log
-    _append_call_log(log_id=log_id, call_id=call_id, medication=medication_name)
+    # Record in persistent call log
+    _append_call_log(log_id=log_id, call_id=call_id, medication=medication_name, phone_masked=masked)
 
     # Only return safe, non-secret information
     return {
@@ -341,11 +321,18 @@ async def dispatch_call(medication_name: str = "آپ کی دوائی") -> dict[s
 
 async def get_call_status(limit: int = 10) -> list[dict[str, Any]]:
     """
-    Retrieve recent Uplift session states for the configured assistant.
+    Retrieve recent Uplift session states for the configured assistant,
+    merged with locally persisted call records so history survives restarts.
 
-    Returns a normalised list of compact session summaries.
+    - Live Uplift sessions take precedence for calls Uplift still knows about.
+    - Locally persisted records fill in any calls that have aged out of Uplift's
+      session history window.
+
+    Returns a normalised list of compact session summaries, most-recent first.
     The caller is responsible for polling at a polite cadence (2–5 seconds).
     """
+    from app.services.call_store import get_all_calls as _local_calls
+
     if not settings.uplift_assistant_id:
         raise HTTPException(
             status_code=503,
@@ -360,20 +347,65 @@ async def get_call_status(limit: int = 10) -> list[dict[str, Any]]:
         extra={"assistantId": settings.uplift_assistant_id, "limit": limit},
     )
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(
-            f"{UPLIFT_BASE_URL}/realtime-assistants/{settings.uplift_assistant_id}/sessions",
-            params={"limit": limit},
-            headers=_auth_headers(),
+    # Fetch live sessions from Uplift
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{UPLIFT_BASE_URL}/realtime-assistants/{settings.uplift_assistant_id}/sessions",
+                params={"limit": limit},
+                headers=_auth_headers(),
+            )
+        _raise_for_uplift_error(response)
+        data = response.json()
+        raw_sessions: list[dict] = data if isinstance(data, list) else data.get("sessions", [])
+        live_sessions = [_normalise_session(s) for s in raw_sessions]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("UPLIFT_STATUS_FETCH_FAILED", extra={"error": str(exc)})
+        live_sessions = []
+
+    # Build a set of callIds Uplift returned so we can avoid duplicates
+    live_call_ids: set[str] = {
+        s["callId"] for s in live_sessions if s.get("callId")
+    }
+    live_session_ids: set[str] = {
+        s["sessionId"] for s in live_sessions if s.get("sessionId")
+    }
+
+    # Pull persisted local records; exclude any that are already in the live response
+    local_records = _local_calls(limit=limit)
+    merged: list[dict[str, Any]] = list(live_sessions)
+    for record in local_records:
+        call_id = record.get("callId")
+        if call_id and call_id in live_call_ids:
+            continue  # already represented by a live entry
+        if call_id and call_id in live_session_ids:
+            continue
+        # Emit a minimal status-compatible entry from the local record.
+        # Sensitive fields (medication, phoneMasked) are intentionally omitted
+        # because this endpoint is unauthenticated — full details are available
+        # only via the admin-protected GET /api/call-log endpoint.
+        merged.append(
+            {
+                "sessionId": record["logId"],
+                "callId": record["callId"],
+                "status": record["status"],
+                "dispatched": record["dispatchedAt"],
+                "dialing": None,
+                "ringing": None,
+                "answered": None,
+                "completed": None,
+                "failed": None,
+                "failureReason": None,
+                "startedAt": record["dispatchedAt"],
+                "endedAt": None,
+                "source": "local",
+            }
         )
 
-    _raise_for_uplift_error(response)
-    data = response.json()
-
-    # Normalise: Uplift may return {"sessions": [...]} or a bare list
-    raw_sessions: list[dict] = data if isinstance(data, list) else data.get("sessions", [])
-
-    return [_normalise_session(s) for s in raw_sessions]
+    # Return up to `limit` entries (live ones first, they're already ordered)
+    return merged[:limit]
 
 
 def _normalise_session(session: dict[str, Any]) -> dict[str, Any]:

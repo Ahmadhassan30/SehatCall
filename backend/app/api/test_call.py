@@ -3,7 +3,7 @@ Test call API routes for DAWA P0-B.
 
 POST /api/test-call        — dispatch a real outbound Urdu medication-reminder call (admin token required)
 GET  /api/test-call/status — inspect recent Uplift session states
-GET  /api/call-log         — inspect the in-memory call log (admin token required)
+GET  /api/call-log         — inspect the persistent SQLite call log (admin token required)
 
 The phone number and assistant ID are always read from server-side configuration.
 They are NEVER accepted from the request body.
@@ -129,7 +129,7 @@ async def call_log(x_admin_token: str | None = Header(default=None)) -> list:
       dispatchedAt — ISO-8601 UTC timestamp
       status       — always "dispatched" in P0-B (no webhook yet)
 
-    Note: this log is cleared on server restart. Persistent storage is out of scope for P0-B.
+    Note: this log is persisted to SQLite and survives server restarts.
     """
     _require_admin_token(x_admin_token)
     return get_call_log()
