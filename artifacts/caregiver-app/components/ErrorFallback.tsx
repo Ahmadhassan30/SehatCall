@@ -9,7 +9,8 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useColors } from '@/hooks/useColors';
+import { useLanguage } from '@/context/LanguageContext';
+import { radius, ui } from '@/lib/ui';
 import { Feather } from '@expo/vector-icons';
 import { reloadAppAsync } from 'expo';
 
@@ -19,7 +20,7 @@ export type ErrorFallbackProps = {
 };
 
 export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
-  const colors = useColors();
+  const { isUrdu, t } = useLanguage();
   const insets = useSafeAreaInsets();
 
   const [isModalVisible, setIsModalVisible] = useState(false);
@@ -48,7 +49,7 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
   });
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <View style={[styles.container, { backgroundColor: ui.canvas }]}>
       {__DEV__ ? (
         <Pressable
           onPress={() => setIsModalVisible(true)}
@@ -58,22 +59,22 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
             styles.topButton,
             {
               top: insets.top + 16,
-              backgroundColor: colors.card,
+              backgroundColor: ui.surface,
               opacity: pressed ? 0.8 : 1,
             },
           ]}
         >
-          <Feather name="alert-circle" size={20} color={colors.foreground} />
+          <Feather name="alert-circle" size={20} color={ui.text} />
         </Pressable>
       ) : null}
 
       <View style={styles.content}>
-        <Text style={[styles.title, { color: colors.foreground }]}>
-          Something went wrong
+        <Text style={[styles.title, isUrdu && styles.rtlText]}>
+          {t('error.title')}
         </Text>
 
-        <Text style={[styles.message, { color: colors.mutedForeground }]}>
-          Please reload the app to continue.
+        <Text style={[styles.message, isUrdu && styles.rtlText]}>
+          {t('error.body')}
         </Text>
 
         <Pressable
@@ -81,16 +82,16 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
           style={({ pressed }) => [
             styles.button,
             {
-              backgroundColor: colors.primary,
+              backgroundColor: ui.primary,
               opacity: pressed ? 0.9 : 1,
               transform: [{ scale: pressed ? 0.98 : 1 }],
             },
           ]}
         >
           <Text
-            style={[styles.buttonText, { color: colors.primaryForeground }]}
+            style={[styles.buttonText, isUrdu && styles.rtlText]}
           >
-            Try Again
+            {t('common.retry')}
           </Text>
         </Pressable>
       </View>
@@ -106,17 +107,17 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
             <View
               style={[
                 styles.modalContainer,
-                { backgroundColor: colors.background },
+                { backgroundColor: ui.canvas },
               ]}
             >
               <View
                 style={[
                   styles.modalHeader,
-                  { borderBottomColor: colors.border },
+                  { borderBottomColor: ui.line },
                 ]}
               >
-                <Text style={[styles.modalTitle, { color: colors.foreground }]}>
-                  Error Details
+                <Text style={styles.modalTitle}>
+                  {t('error.details')}
                 </Text>
                 <Pressable
                   onPress={() => setIsModalVisible(false)}
@@ -127,7 +128,7 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
                     { opacity: pressed ? 0.6 : 1 },
                   ]}
                 >
-                  <Feather name="x" size={24} color={colors.foreground} />
+                  <Feather name="x" size={24} color={ui.text} />
                 </Pressable>
               </View>
 
@@ -142,14 +143,14 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
                 <View
                   style={[
                     styles.errorContainer,
-                    { backgroundColor: colors.card },
+                    { backgroundColor: ui.surface },
                   ]}
                 >
                   <Text
                     style={[
                       styles.errorText,
                       {
-                        color: colors.foreground,
+                        color: ui.text,
                         fontFamily: monoFont,
                       },
                     ]}
@@ -184,13 +185,16 @@ const styles = StyleSheet.create({
     maxWidth: 600,
   },
   title: {
+    fontFamily: 'Inter_700Bold',
     fontSize: 28,
-    fontWeight: '700',
+    color: ui.text,
     textAlign: 'center',
     lineHeight: 40,
   },
   message: {
+    fontFamily: 'Inter_400Regular',
     fontSize: 16,
+    color: ui.muted,
     textAlign: 'center',
     lineHeight: 24,
   },
@@ -199,7 +203,7 @@ const styles = StyleSheet.create({
     right: 16,
     width: 44,
     height: 44,
-    borderRadius: 8,
+    borderRadius: radius.medium,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -207,20 +211,13 @@ const styles = StyleSheet.create({
   },
   button: {
     paddingVertical: 16,
-    borderRadius: 8,
+    borderRadius: radius.medium,
     paddingHorizontal: 24,
     minWidth: 200,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
   },
   buttonText: {
-    fontWeight: '600',
+    fontFamily: 'Inter_600SemiBold',
+    color: ui.surface,
     textAlign: 'center',
     fontSize: 16,
   },
@@ -232,8 +229,8 @@ const styles = StyleSheet.create({
   modalContainer: {
     width: '100%',
     height: '90%',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    borderTopLeftRadius: radius.medium,
+    borderTopRightRadius: radius.medium,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -245,8 +242,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   modalTitle: {
+    fontFamily: 'Inter_600SemiBold',
     fontSize: 20,
-    fontWeight: '600',
+    color: ui.text,
   },
   closeButton: {
     width: 44,
@@ -262,7 +260,7 @@ const styles = StyleSheet.create({
   },
   errorContainer: {
     width: '100%',
-    borderRadius: 8,
+    borderRadius: radius.medium,
     overflow: 'hidden',
     padding: 16,
   },
@@ -271,4 +269,5 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     width: '100%',
   },
+  rtlText: { fontFamily: undefined, textAlign: 'right', writingDirection: 'rtl' },
 });

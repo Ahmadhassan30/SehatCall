@@ -1,12 +1,8 @@
 import React from 'react';
 import { View, Text, StyleSheet, StatusBar } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-
-const C = {
-  cream: '#F7F3E8',
-  navy: '#243642',
-  blue: '#6F9FB5',
-};
+import { useLanguage } from '@/context/LanguageContext';
+import { ui } from '@/lib/ui';
 
 interface Props {
   title: string;
@@ -15,13 +11,14 @@ interface Props {
 }
 
 export function DawaHeader({ title, subtitle, right }: Props) {
+  const { isUrdu } = useLanguage();
   return (
     <SafeAreaView edges={['top']} style={styles.safe}>
-      <StatusBar barStyle="dark-content" backgroundColor={C.cream} />
-      <View style={styles.row}>
+      <StatusBar barStyle="dark-content" backgroundColor={ui.surface} />
+      <View style={[styles.row, isUrdu && styles.rowRtl]}>
         <View style={styles.text}>
-          <Text style={styles.title}>{title}</Text>
-          {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+          <Text style={[styles.title, isUrdu && styles.urduText]}>{title}</Text>
+          {subtitle ? <Text style={[styles.subtitle, isUrdu && styles.urduText]}>{subtitle}</Text> : null}
         </View>
         {right ? <View>{right}</View> : null}
       </View>
@@ -30,27 +27,29 @@ export function DawaHeader({ title, subtitle, right }: Props) {
 }
 
 const styles = StyleSheet.create({
-  safe: { backgroundColor: C.cream },
+  safe: { backgroundColor: ui.surface },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingVertical: 14,
+    paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#D8D0BC',
+    borderBottomColor: ui.line,
   },
+  rowRtl: { flexDirection: 'row-reverse' },
   text: { flex: 1 },
   title: {
     fontFamily: 'Inter_700Bold',
-    fontSize: 22,
-    color: C.navy,
-    letterSpacing: -0.4,
+    fontSize: 28,
+    color: ui.text,
+    letterSpacing: 0,
   },
   subtitle: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 13,
-    color: C.navy + '99',
-    marginTop: 2,
+    fontFamily: 'Inter_500Medium',
+    fontSize: 14,
+    color: ui.muted,
+    marginTop: 4,
   },
+  urduText: { fontFamily: undefined, textAlign: 'right', writingDirection: 'rtl' },
 });

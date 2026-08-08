@@ -18,11 +18,14 @@ import { useRouter } from 'expo-router';
 import { authClient } from '@/lib/auth-client';
 import { useP3 } from '@/context/P3Context';
 import { useDawa } from '@/context/DawaContext';
+import { useLanguage } from '@/context/LanguageContext';
+import { radius, ui } from '@/lib/ui';
 
 export default function Root() {
   const { data: session, isPending } = authClient.useSession();
   const { patient, patientLoading, patientReady, patientError, refreshPatient } = useP3();
   const { apiBaseUrl } = useDawa();
+  const { isUrdu, t } = useLanguage();
   const router = useRouter();
 
   useEffect(() => {
@@ -54,10 +57,10 @@ export default function Root() {
   if (session && patientReady && patientError) {
     return (
       <View style={styles.screen}>
-        <Text style={styles.errorTitle}>Couldn&apos;t load your patient</Text>
-        <Text style={styles.errorText}>{patientError}</Text>
+        <Text style={[styles.errorTitle, isUrdu && styles.rtlText]}>{t('common.patientLoadFailed')}</Text>
+        <Text style={[styles.errorText, isUrdu && styles.rtlText]}>{patientError}</Text>
         <TouchableOpacity style={styles.retryButton} onPress={refreshPatient}>
-          <Text style={styles.retryText}>Try again</Text>
+          <Text style={[styles.retryText, isUrdu && styles.rtlText]}>{t('common.retry')}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -65,7 +68,7 @@ export default function Root() {
 
   return (
     <View style={styles.screen}>
-      <ActivityIndicator size="large" color="#6F9FB5" />
+      <ActivityIndicator size="large" color={ui.primary} />
     </View>
   );
 }
@@ -73,35 +76,36 @@ export default function Root() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#F7F3E8',
+    backgroundColor: ui.canvas,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 28,
   },
   errorTitle: {
     fontFamily: 'Inter_700Bold',
-    fontSize: 20,
-    color: '#243642',
+    fontSize: 24,
+    color: ui.text,
     marginBottom: 10,
     textAlign: 'center',
   },
   errorText: {
     fontFamily: 'Inter_400Regular',
-    fontSize: 14,
-    lineHeight: 20,
-    color: '#7A8A8E',
+    fontSize: 15,
+    lineHeight: 23,
+    color: ui.muted,
     marginBottom: 20,
     textAlign: 'center',
   },
   retryButton: {
-    backgroundColor: '#6F9FB5',
-    borderRadius: 8,
+    backgroundColor: ui.primary,
+    borderRadius: radius.medium,
     paddingHorizontal: 22,
     paddingVertical: 12,
   },
   retryText: {
     fontFamily: 'Inter_600SemiBold',
-    fontSize: 15,
-    color: '#FFFFFF',
+    fontSize: 16,
+    color: ui.surface,
   },
+  rtlText: { fontFamily: undefined, textAlign: 'right', writingDirection: 'rtl' },
 });

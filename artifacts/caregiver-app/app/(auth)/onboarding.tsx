@@ -31,18 +31,20 @@ import { useRouter } from 'expo-router';
 import { useDawa } from '@/context/DawaContext';
 import { useP3 } from '@/context/P3Context';
 import { authClient } from '@/lib/auth-client';
+import { useLanguage } from '@/context/LanguageContext';
+import { radius, ui } from '@/lib/ui';
 
 const C = {
-  cream: '#F7F3E8',
-  blue: '#6F9FB5',
-  navy: '#243642',
-  white: '#FFFFFF',
-  muted: '#7A8A8E',
-  border: '#D8D0BC',
-  err: '#B83232',
-  errBg: '#FDEAEA',
-  ok: '#2D7A4F',
-  okBg: '#EAF5EE',
+  cream: ui.canvas,
+  blue: ui.primary,
+  navy: ui.text,
+  white: ui.surface,
+  muted: ui.muted,
+  border: ui.line,
+  err: ui.danger,
+  errBg: ui.dangerSoft,
+  ok: ui.success,
+  okBg: ui.successSoft,
 };
 
 type Step = 'details' | 'verify';
@@ -51,6 +53,8 @@ export default function OnboardingScreen() {
   const router = useRouter();
   const { apiBaseUrl } = useDawa();
   const { data: session } = authClient.useSession();
+  const { t, isUrdu } = useLanguage();
+  const rtl = isUrdu && styles.rtlText;
   const {
     patient,
     patientLoading,
@@ -101,19 +105,19 @@ export default function OnboardingScreen() {
 
   const requireApi = (): boolean => {
     if (!apiBaseUrl) {
-      setError('Backend URL not configured. Open Settings, set the API URL, then come back.');
+      setError(t('onboarding.backendMissing'));
       return false;
     }
     return true;
   };
 
   const describe = (e: unknown) =>
-    e instanceof Error ? e.message : 'Something went wrong. Please try again.';
+    e instanceof Error ? e.message : t('onboarding.failed');
 
   const handleCreate = async () => {
     if (!requireApi()) return;
     if (!name.trim() || !address.trim() || !phone.trim()) {
-      setError('Please fill in all three fields.');
+      setError(t('onboarding.completeFields'));
       return;
     }
     setLoading(true);
@@ -155,7 +159,7 @@ export default function OnboardingScreen() {
       const challenge = await sendPhoneCode();
       setMaskedPhone(challenge.maskedPhone);
       setCooldown(challenge.resendAvailableInSeconds ?? 60);
-      setNotice('Calling again now.');
+      setNotice(t('onboarding.callingAgain'));
     } catch (e) {
       setError(describe(e));
     } finally {
@@ -166,7 +170,7 @@ export default function OnboardingScreen() {
   const handleVerify = async () => {
     if (!requireApi()) return;
     if (!code.trim()) {
-      setError('Enter the code you heard on the call.');
+      setError(t('onboarding.enterCode'));
       return;
     }
     setLoading(true);
@@ -202,10 +206,10 @@ export default function OnboardingScreen() {
     return (
       <View style={[styles.screen, styles.loadingScreen]}>
         <StatusBar style="dark" />
-        <Text style={styles.lookupErrorTitle}>Couldn&apos;t load your patient</Text>
-        <Text style={styles.lookupErrorText}>{patientError}</Text>
+        <Text style={[styles.lookupErrorTitle, rtl]}>{t('common.patientLoadFailed')}</Text>
+        <Text style={[styles.lookupErrorText, rtl]}>{patientError}</Text>
         <TouchableOpacity style={styles.lookupRetryButton} onPress={refreshPatient}>
-          <Text style={styles.lookupRetryText}>Try again</Text>
+          <Text style={[styles.lookupRetryText, isUrdu && styles.urduFont]}>{t('common.retry')}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -222,45 +226,42 @@ export default function OnboardingScreen() {
         <View style={styles.header}>
           <Text style={styles.wordmark}>DAWA</Text>
           {session?.user?.name ? (
-            <Text style={styles.greeting}>Hello, {session.user.name.split(' ')[0]}</Text>
+            <Text style={[styles.greeting, rtl]}>
+              {t('onboarding.greeting', { name: session.user.name.split(' ')[0] })}
+            </Text>
           ) : null}
         </View>
 
         <View style={styles.card}>
           {step === 'details' ? (
             <>
-              <Text style={styles.cardTitle}>Who are we calling?</Text>
-              <Text style={styles.cardBody}>
-                Tell us about the person DAWA will remind. You can change any of
-                this later.
-              </Text>
+              <Text style={[styles.cardTitle, rtl]}>{t('onboarding.who')}</Text>
+              <Text style={[styles.cardBody, rtl]}>{t('onboarding.whoBody')}</Text>
 
-              <Text style={styles.label}>Their name</Text>
+              <Text style={[styles.label, rtl]}>{t('onboarding.name')}</Text>
               <TextInput
-                style={styles.input}
+                style={[styles.input, isUrdu && styles.rtlInput]}
                 value={name}
                 onChangeText={setName}
-                placeholder="e.g. Razia Bibi"
+                placeholder={t('onboarding.nameExample')}
                 placeholderTextColor={C.muted}
                 autoCapitalize="words"
                 editable={!loading}
               />
 
-              <Text style={styles.label}>What DAWA should call them</Text>
+              <Text style={[styles.label, rtl]}>{t('onboarding.address')}</Text>
               <TextInput
-                style={styles.input}
+                style={[styles.input, isUrdu && styles.rtlInput]}
                 value={address}
                 onChangeText={setAddress}
-                placeholder="e.g. Ammi"
+                placeholder={t('onboarding.addressExample')}
                 placeholderTextColor={C.muted}
                 autoCapitalize="words"
                 editable={!loading}
               />
-              <Text style={styles.hint}>
-                DAWA greets them by this name on every call.
-              </Text>
+              <Text style={[styles.hint, rtl]}>{t('onboarding.addressHint')}</Text>
 
-              <Text style={styles.label}>Their phone number</Text>
+              <Text style={[styles.label, rtl]}>{t('onboarding.phone')}</Text>
               <TextInput
                 style={styles.input}
                 value={phone}
@@ -271,21 +272,16 @@ export default function OnboardingScreen() {
                 autoCorrect={false}
                 editable={!loading}
               />
-              <Text style={styles.hint}>
-                Include the country code, starting with “+”. We&apos;ll ring this
-                number once now to make sure it reaches them.
-              </Text>
+              <Text style={[styles.hint, rtl]}>{t('onboarding.phoneHint')}</Text>
             </>
           ) : (
             <>
-              <Text style={styles.cardTitle}>Check the phone</Text>
-              <Text style={styles.cardBody}>
-                DAWA is calling{' '}
-                <Text style={styles.strong}>{maskedPhone ?? 'that number'}</Text>{' '}
-                and will read out a 6-digit code. Enter it below.
+              <Text style={[styles.cardTitle, rtl]}>{t('onboarding.checkPhone')}</Text>
+              <Text style={[styles.cardBody, rtl]}>
+                {t('onboarding.codeBody', { phone: maskedPhone ?? '' })}
               </Text>
 
-              <Text style={styles.label}>Verification code</Text>
+              <Text style={[styles.label, rtl]}>{t('onboarding.code')}</Text>
               <TextInput
                 style={[styles.input, styles.codeInput]}
                 value={code}
@@ -303,7 +299,9 @@ export default function OnboardingScreen() {
                 style={styles.resendLink}
               >
                 <Text style={[styles.resendText, cooldown > 0 && styles.resendMuted]}>
-                  {cooldown > 0 ? `Call again in ${cooldown}s` : 'Didn’t get the call? Try again'}
+                  {cooldown > 0
+                    ? t('onboarding.resendIn', { seconds: cooldown })
+                    : t('onboarding.resend')}
                 </Text>
               </TouchableOpacity>
             </>
@@ -331,7 +329,7 @@ export default function OnboardingScreen() {
               <ActivityIndicator color={C.white} size="small" />
             ) : (
               <Text style={styles.primaryBtnText}>
-                {step === 'details' ? 'Call to verify' : 'Confirm code'}
+                {step === 'details' ? t('onboarding.callVerify') : t('onboarding.confirm')}
               </Text>
             )}
           </TouchableOpacity>
@@ -345,13 +343,13 @@ export default function OnboardingScreen() {
               }}
               style={styles.backLink}
             >
-              <Text style={styles.backText}>Change the number</Text>
+              <Text style={[styles.backText, isUrdu && styles.urduFont]}>{t('onboarding.changeNumber')}</Text>
             </TouchableOpacity>
           ) : null}
         </View>
 
         <TouchableOpacity onPress={handleSignOut} style={styles.signOutLink}>
-          <Text style={styles.signOutText}>Sign out and use a different account</Text>
+          <Text style={[styles.signOutText, isUrdu && styles.urduFont]}>{t('onboarding.signOut')}</Text>
         </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -392,48 +390,45 @@ const styles = StyleSheet.create({
   header: { alignItems: 'center', paddingVertical: 28 },
   wordmark: {
     fontFamily: 'Inter_700Bold',
-    fontSize: 40,
+    fontSize: 32,
     color: C.navy,
-    letterSpacing: 6,
+    letterSpacing: 0,
     marginBottom: 8,
   },
-  greeting: { fontFamily: 'Inter_400Regular', fontSize: 16, color: C.muted },
+  greeting: { fontFamily: 'Inter_500Medium', fontSize: 16, color: C.muted },
 
   card: {
     backgroundColor: C.white,
-    borderRadius: 24,
-    padding: 28,
-    shadowColor: C.navy,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 16,
-    elevation: 6,
+    borderRadius: radius.large,
+    padding: 22,
+    borderWidth: 1,
+    borderColor: C.border,
   },
   cardTitle: {
     fontFamily: 'Inter_700Bold',
-    fontSize: 22,
+    fontSize: 26,
     color: C.navy,
     marginBottom: 12,
   },
   cardBody: {
     fontFamily: 'Inter_400Regular',
-    fontSize: 15,
+    fontSize: 16,
     color: C.muted,
-    lineHeight: 22,
+    lineHeight: 24,
     marginBottom: 18,
   },
   strong: { fontFamily: 'Inter_600SemiBold', color: C.navy },
 
   label: {
     fontFamily: 'Inter_600SemiBold',
-    fontSize: 13,
+    fontSize: 14,
     color: C.navy,
     marginBottom: 6,
   },
   input: {
     borderWidth: 1,
     borderColor: C.border,
-    borderRadius: 12,
+    borderRadius: radius.medium,
     paddingHorizontal: 14,
     paddingVertical: 13,
     fontFamily: 'Inter_400Regular',
@@ -445,7 +440,7 @@ const styles = StyleSheet.create({
   codeInput: {
     fontFamily: 'Inter_700Bold',
     fontSize: 24,
-    letterSpacing: 8,
+    letterSpacing: 0,
     textAlign: 'center',
   },
   hint: {
@@ -467,7 +462,7 @@ const styles = StyleSheet.create({
 
   errBanner: {
     backgroundColor: C.errBg,
-    borderRadius: 10,
+    borderRadius: radius.medium,
     padding: 12,
     marginBottom: 16,
     borderLeftWidth: 3,
@@ -477,7 +472,7 @@ const styles = StyleSheet.create({
 
   okBanner: {
     backgroundColor: C.okBg,
-    borderRadius: 10,
+    borderRadius: radius.medium,
     padding: 12,
     marginBottom: 16,
     borderLeftWidth: 3,
@@ -487,15 +482,15 @@ const styles = StyleSheet.create({
 
   primaryBtn: {
     backgroundColor: C.blue,
-    borderRadius: 14,
-    paddingVertical: 18,
+    borderRadius: radius.medium,
+    paddingVertical: 15,
     alignItems: 'center',
     marginTop: 4,
   },
   primaryBtnDisabled: { opacity: 0.6 },
   primaryBtnText: {
     fontFamily: 'Inter_600SemiBold',
-    fontSize: 17,
+    fontSize: 18,
     color: C.white,
   },
 
@@ -514,4 +509,7 @@ const styles = StyleSheet.create({
     color: C.muted,
     textDecorationLine: 'underline',
   },
+  rtlText: { fontFamily: undefined, textAlign: 'right', writingDirection: 'rtl' },
+  rtlInput: { fontFamily: undefined, textAlign: 'right', writingDirection: 'rtl' },
+  urduFont: { fontFamily: undefined },
 });

@@ -14,6 +14,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { DawaProvider } from '@/context/DawaContext';
 import { P3Provider } from '@/context/P3Context';
+import { LanguageProvider } from '@/context/LanguageContext';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -50,7 +51,8 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <ErrorBoundary>
+      <LanguageProvider>
+        <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
           <GestureHandlerRootView style={{ flex: 1 }}>
             <DawaProvider>
@@ -60,7 +62,8 @@ export default function RootLayout() {
             </DawaProvider>
           </GestureHandlerRootView>
         </QueryClientProvider>
-      </ErrorBoundary>
+        </ErrorBoundary>
+      </LanguageProvider>
     </SafeAreaProvider>
   );
 }

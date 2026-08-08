@@ -1,59 +1,60 @@
-/**
- * Add medication form.
- */
-import React, { useState, useCallback } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
-  View,
-  Text,
+  ActivityIndicator,
   ScrollView,
-  TextInput,
-  TouchableOpacity,
   StyleSheet,
   Switch,
-  ActivityIndicator,
-  Alert,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { useLanguage } from '@/context/LanguageContext';
 import { useP3, type MedicationPayload } from '@/context/P3Context';
+import { radius, ui } from '@/lib/ui';
 
-const C = {
-  cream: '#F7F3E8',
-  blue: '#6F9FB5',
-  navy: '#243642',
-  white: '#FFFFFF',
-  border: '#D8D0BC',
-  muted: '#7A8A8E',
-  err: '#B83232',
-  errBg: '#FDEAEA',
-  warn: '#C97B2A',
-  warnBg: '#FDF3E3',
-};
+function isValidTime(value: string): boolean {
+  const match = value.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return false;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
+}
 
-const VALID_CUE_KEYS: Array<{ key: string; label: string }> = [
-  { key: 'package_color', label: 'Package colour' },
-  { key: 'stripe_color', label: 'Stripe colour' },
-  { key: 'tablet_shape', label: 'Tablet shape' },
-  { key: 'storage_location', label: 'Where it is kept' },
-];
-
-function Field({ label, value, onChangeText, placeholder, multiline, hint, required }: {
-  label: string; value: string; onChangeText: (t: string) => void;
-  placeholder?: string; multiline?: boolean; hint?: string; required?: boolean;
+function Field({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  hint,
+  multiline,
+  required,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  placeholder?: string;
+  hint?: string;
+  multiline?: boolean;
+  required?: boolean;
 }) {
+  const { isUrdu } = useLanguage();
   return (
     <View style={styles.field}>
-      <Text style={styles.label}>
-        {label}{required ? <Text style={{ color: C.err }}> *</Text> : null}
+      <Text style={[styles.label, isUrdu && styles.rtlText]}>
+        {label}{required ? <Text style={styles.required}> *</Text> : null}
       </Text>
-      {hint ? <Text style={styles.hint}>{hint}</Text> : null}
+      {hint ? <Text style={[styles.hint, isUrdu && styles.rtlText]}>{hint}</Text> : null}
       <TextInput
-        style={[styles.input, multiline && styles.inputMulti]}
+        style={[styles.input, multiline && styles.multiline, isUrdu && styles.rtlInput]}
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
-        placeholderTextColor={C.muted}
+        placeholderTextColor={ui.muted}
         multiline={multiline}
         numberOfLines={multiline ? 3 : 1}
       />
@@ -61,22 +62,15 @@ function Field({ label, value, onChangeText, placeholder, multiline, hint, requi
   );
 }
 
-function SectionTitle({ text }: { text: string }) {
-  return <Text style={styles.sectionTitle}>{text}</Text>;
-}
-
-/** Strict HH:MM validation — the backend rejects anything else. */
-function isValidTime(t: string): boolean {
-  const m = t.match(/^(\d{1,2}):(\d{2})$/);
-  if (!m) return false;
-  const h = parseInt(m[1], 10), min = parseInt(m[2], 10);
-  return h >= 0 && h <= 23 && min >= 0 && min <= 59;
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  const { isUrdu } = useLanguage();
+  return <Text style={[styles.sectionTitle, isUrdu && styles.rtlText]}>{children}</Text>;
 }
 
 export default function NewMedicationScreen() {
   const { createMedication } = useP3();
+  const { isUrdu, t } = useLanguage();
   const router = useRouter();
-
   const [clinicalName, setClinicalName] = useState('');
   const [nickname, setNickname] = useState('');
   const [dosage, setDosage] = useState('');
@@ -84,154 +78,117 @@ export default function NewMedicationScreen() {
   const [foodInstruction, setFoodInstruction] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
   const [routineAnchor, setRoutineAnchor] = useState('');
-  const [autoCallEnabled, setAutoCallEnabled] = useState(true);
+  const [automaticCalls, setAutomaticCalls] = useState(true);
   const [doctorInstructions, setDoctorInstructions] = useState('');
   const [doctorName, setDoctorName] = useState('');
   const [cues, setCues] = useState<Record<string, string>>({});
-
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
-
-  const updateCue = useCallback((key: string, value: string) => {
-    setCues((prev) => ({ ...prev, [key]: value }));
-  }, []);
+  const rtl = isUrdu ? styles.rtlText : undefined;
+  const cueFields = [
+    ['package_color', t('form.packageColour')],
+    ['stripe_color', t('form.stripeColour')],
+    ['tablet_shape', t('form.tabletShape')],
+    ['storage_location', t('form.storage')],
+  ] as const;
 
   const handleSave = useCallback(async () => {
     setError(null);
-    if (!clinicalName.trim()) { setError('Clinical name is required.'); return; }
-    if (!dosage.trim()) { setError('Dosage is required.'); return; }
-    if (!doseInstruction.trim()) { setError('Dose instruction is required.'); return; }
-    if (!scheduleTime.trim() || !isValidTime(scheduleTime.trim())) {
-      setError('Schedule time must be HH:MM (24-hour), e.g. 21:00');
-      return;
-    }
+    if (!clinicalName.trim()) return setError(t('form.requiredClinical'));
+    if (!dosage.trim()) return setError(t('form.requiredDosage'));
+    if (!doseInstruction.trim()) return setError(t('form.requiredDose'));
+    if (!isValidTime(scheduleTime.trim())) return setError(t('form.invalidTime'));
 
-    // Normalise HH:MM
-    const [h, m] = scheduleTime.split(':').map(Number);
-    const normTime = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-
+    const [hour, minute] = scheduleTime.split(':').map(Number);
+    const normalisedTime = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
     setSaving(true);
     try {
       const payload: MedicationPayload = {
         clinicalName: clinicalName.trim(),
+        nickname: nickname.trim() || undefined,
         dosage: dosage.trim(),
         doseInstruction: doseInstruction.trim(),
-        scheduleTime: normTime,
-        nickname: nickname.trim() || undefined,
         foodInstruction: foodInstruction.trim() || undefined,
+        scheduleTime: normalisedTime,
         routineAnchor: routineAnchor.trim() || undefined,
-        autoCallEnabled,
         active: true,
+        autoCallEnabled: automaticCalls,
         doctorInstructions: doctorInstructions.trim() || undefined,
         doctorName: doctorName.trim() || undefined,
-        cues: Object.fromEntries(Object.entries(cues).filter(([, v]) => v.trim())),
+        cues: Object.fromEntries(Object.entries(cues).filter(([, value]) => value.trim())),
       };
-      const med = await createMedication(payload);
-      if (med.warnings?.length) {
-        // Show but never auto-resolve — save succeeded, surface caution
-        setWarnings(med.warnings);
-        setSaving(false);
-        return; // hold on screen so caregiver reads the warning, then let them go back
+      const medicine = await createMedication(payload);
+      if (medicine.warnings?.length) {
+        setWarnings(medicine.warnings);
+        return;
       }
       router.back();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save medication');
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : t('form.saveFailed'));
+    } finally {
       setSaving(false);
     }
-  }, [clinicalName, nickname, dosage, doseInstruction, foodInstruction, scheduleTime, routineAnchor, autoCallEnabled, doctorInstructions, doctorName, cues, createMedication, router]);
+  }, [automaticCalls, clinicalName, createMedication, cues, doctorInstructions, doctorName, dosage, doseInstruction, foodInstruction, nickname, router, routineAnchor, scheduleTime, t]);
 
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
-      <SafeAreaView edges={['top']} style={styles.topBar}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.cancelBtn}>
-          <Text style={styles.cancelText}>Cancel</Text>
+      <SafeAreaView edges={['top']} style={[styles.topBar, isUrdu && styles.rowRtl]}>
+        <TouchableOpacity style={styles.iconButton} onPress={() => router.back()} accessibilityLabel={t('common.cancel')}>
+          <Ionicons name={isUrdu ? 'arrow-forward' : 'arrow-back'} size={21} color={ui.text} />
         </TouchableOpacity>
-        <Text style={styles.screenTitle}>Add Medication</Text>
-        <TouchableOpacity onPress={handleSave} disabled={saving} style={styles.doneBtn}>
-          {saving ? <ActivityIndicator size="small" color={C.white} /> : <Text style={styles.doneText}>Save</Text>}
+        <Text style={[styles.screenTitle, rtl]}>{t('form.addTitle')}</Text>
+        <TouchableOpacity style={[styles.iconButton, styles.saveButton]} onPress={handleSave} disabled={saving} accessibilityLabel={t('common.save')}>
+          {saving ? <ActivityIndicator size="small" color={ui.surface} /> : <Ionicons name="checkmark" size={22} color={ui.surface} />}
         </TouchableOpacity>
       </SafeAreaView>
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        {/* ── Clinical info ────────────────────────────────────────── */}
-        <SectionTitle text="MEDICATION" />
+        <SectionTitle>{t('form.medication')}</SectionTitle>
         <View style={styles.card}>
-          <Field label="Clinical name" value={clinicalName} onChangeText={setClinicalName} placeholder="e.g. Metformin" required />
-          <Field label="Nickname" value={nickname} onChangeText={setNickname} placeholder="e.g. raat wali goli" hint="What Razia Bibi calls it" />
-          <Field label="Dosage" value={dosage} onChangeText={setDosage} placeholder="e.g. 500 mg" required />
-          <Field label="Dose instruction" value={doseInstruction} onChangeText={setDoseInstruction} placeholder="e.g. 1 tablet" required />
-          <Field label="Food instruction" value={foodInstruction} onChangeText={setFoodInstruction} placeholder="e.g. after dinner" />
+          <Field label={t('form.clinicalName')} value={clinicalName} onChangeText={setClinicalName} placeholder={t('form.exampleClinical')} required />
+          <Field label={t('form.nickname')} value={nickname} onChangeText={setNickname} placeholder={t('form.exampleNickname')} hint={t('form.nicknameHint')} />
+          <Field label={t('form.dosage')} value={dosage} onChangeText={setDosage} placeholder={t('form.exampleDosage')} required />
+          <Field label={t('form.doseInstruction')} value={doseInstruction} onChangeText={setDoseInstruction} placeholder={t('form.exampleDose')} required />
+          <Field label={t('form.foodInstruction')} value={foodInstruction} onChangeText={setFoodInstruction} placeholder={t('form.exampleFood')} />
         </View>
 
-        {/* ── Schedule ─────────────────────────────────────────────── */}
-        <SectionTitle text="SCHEDULE" />
+        <SectionTitle>{t('form.schedule')}</SectionTitle>
         <View style={styles.card}>
-          <Field
-            label="Call time"
-            value={scheduleTime}
-            onChangeText={setScheduleTime}
-            placeholder="21:00"
-            hint="24-hour format HH:MM"
-            required
-          />
-          <Field label="Routine anchor" value={routineAnchor} onChangeText={setRoutineAnchor} placeholder="e.g. after dinner" hint="Helps Razia Bibi remember when" />
-
-          <View style={styles.toggleRow}>
-            <View>
-              <Text style={styles.label}>Auto-call</Text>
-              <Text style={styles.hint}>DAWA will call automatically at this time</Text>
+          <Field label={t('form.callTime')} value={scheduleTime} onChangeText={setScheduleTime} placeholder="21:00" hint={t('form.timeHint')} required />
+          <Field label={t('form.routineAnchor')} value={routineAnchor} onChangeText={setRoutineAnchor} placeholder={t('form.exampleRoutine')} hint={t('form.routineHint')} />
+          <View style={[styles.toggleRow, isUrdu && styles.rowRtl]}>
+            <View style={styles.toggleCopy}>
+              <Text style={[styles.label, rtl]}>{t('form.automaticCalls')}</Text>
+              <Text style={[styles.hint, rtl]}>{t('form.automaticCallsHint')}</Text>
             </View>
-            <Switch
-              value={autoCallEnabled}
-              onValueChange={setAutoCallEnabled}
-              trackColor={{ true: C.blue, false: C.border }}
-              thumbColor={C.white}
-            />
+            <Switch value={automaticCalls} onValueChange={setAutomaticCalls} trackColor={{ true: ui.primary, false: ui.line }} thumbColor={ui.surface} />
           </View>
         </View>
 
-        {/* ── Visual cues ───────────────────────────────────────────── */}
-        <SectionTitle text="HOW RAZIA BIBI IDENTIFIES THIS MEDICINE" />
+        <SectionTitle>{t('form.identification')}</SectionTitle>
         <View style={styles.card}>
-          <Text style={styles.cueIntro}>
-            These details help DAWA ask Razia Bibi to find the right medicine by sight — the only way someone who cannot read can verify they have the right tablet.
-          </Text>
-          {VALID_CUE_KEYS.map(({ key, label }) => (
-            <Field
-              key={key}
-              label={label}
-              value={cues[key] ?? ''}
-              onChangeText={(v) => updateCue(key, v)}
-              placeholder="e.g. white"
-            />
+          <Text style={[styles.intro, rtl]}>{t('form.identificationBody')}</Text>
+          {cueFields.map(([key, label]) => (
+            <Field key={key} label={label} value={cues[key] ?? ''} onChangeText={(value) => setCues((current) => ({ ...current, [key]: value }))} placeholder={t('form.exampleColour')} />
           ))}
         </View>
 
-        {/* ── Doctor note ───────────────────────────────────────────── */}
-        <SectionTitle text="DOCTOR'S INSTRUCTIONS (OPTIONAL)" />
+        <SectionTitle>{t('form.doctorInstructions')}</SectionTitle>
         <View style={styles.card}>
-          <Text style={styles.cueIntro}>
-            DAWA never overrides the structured fields above. If this note conflicts with them, DAWA will ask the caregiver to verify rather than choosing on its own.
-          </Text>
-          <Field label="Doctor's name" value={doctorName} onChangeText={setDoctorName} placeholder="Dr. Ahmed" />
-          <Field label="Instructions" value={doctorInstructions} onChangeText={setDoctorInstructions} placeholder="e.g. Take with a full glass of water" multiline />
+          <Text style={[styles.intro, rtl]}>{t('form.doctorBody')}</Text>
+          <Field label={t('form.doctorName')} value={doctorName} onChangeText={setDoctorName} placeholder={t('form.exampleDoctor')} />
+          <Field label={t('form.instructions')} value={doctorInstructions} onChangeText={setDoctorInstructions} placeholder={t('form.exampleInstructions')} multiline />
         </View>
 
-        {/* ── Errors / Warnings ────────────────────────────────────── */}
-        {error ? (
-          <View style={styles.errBanner}><Text style={styles.errText}>{error}</Text></View>
-        ) : null}
-
-        {warnings.length > 0 ? (
-          <View style={styles.warnCard}>
-            <Text style={styles.warnTitle}>Saved — please review</Text>
-            {warnings.map((w, i) => (
-              <Text key={i} style={styles.warnText}>{w}</Text>
-            ))}
-            <TouchableOpacity style={styles.doneWarnBtn} onPress={() => router.back()}>
-              <Text style={styles.doneWarnText}>Got it, go back</Text>
+        {error ? <View style={styles.errorPanel}><Text style={[styles.errorText, rtl]}>{error}</Text></View> : null}
+        {warnings.length ? (
+          <View style={styles.warningPanel}>
+            <Text style={[styles.warningTitle, rtl]}>{t('form.savedReview')}</Text>
+            {warnings.map((warning, index) => <Text key={index} style={[styles.warningText, rtl]}>{warning}</Text>)}
+            <TouchableOpacity style={styles.warningButton} onPress={() => router.back()}>
+              <Text style={[styles.warningButtonText, rtl]}>{t('form.return')}</Text>
             </TouchableOpacity>
           </View>
         ) : null}
@@ -241,64 +198,31 @@ export default function NewMedicationScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: C.cream },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    backgroundColor: C.cream,
-    borderBottomWidth: 1,
-    borderBottomColor: C.border,
-  },
-  cancelBtn: { padding: 4, minWidth: 60 },
-  cancelText: { fontFamily: 'Inter_400Regular', fontSize: 16, color: C.muted },
-  screenTitle: { fontFamily: 'Inter_700Bold', fontSize: 17, color: C.navy },
-  doneBtn: { backgroundColor: C.blue, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 8, minWidth: 60, alignItems: 'center' },
-  doneText: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: C.white },
-
-  scroll: { padding: 20, paddingBottom: 60 },
-  sectionTitle: {
-    fontFamily: 'Inter_600SemiBold', fontSize: 11, color: C.muted,
-    letterSpacing: 1.1, marginTop: 20, marginBottom: 10,
-  },
-  card: {
-    backgroundColor: C.white, borderRadius: 16, padding: 18,
-    shadowColor: C.navy, shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05, shadowRadius: 5, elevation: 2,
-  },
+  screen: { flex: 1, backgroundColor: ui.canvas },
+  topBar: { minHeight: 58, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 8, backgroundColor: ui.surface, borderBottomWidth: 1, borderBottomColor: ui.line },
+  rowRtl: { flexDirection: 'row-reverse' },
+  iconButton: { width: 40, height: 40, borderRadius: radius.medium, alignItems: 'center', justifyContent: 'center' },
+  saveButton: { backgroundColor: ui.primary },
+  screenTitle: { flex: 1, fontFamily: 'Inter_700Bold', fontSize: 21, color: ui.text, textAlign: 'center', marginHorizontal: 10 },
+  scroll: { padding: 16, paddingBottom: 60 },
+  sectionTitle: { fontFamily: 'Inter_700Bold', fontSize: 16, color: ui.text, marginTop: 28, marginBottom: 10 },
+  card: { backgroundColor: ui.surface, borderWidth: 1, borderColor: ui.line, borderRadius: radius.medium, padding: 18 },
   field: { marginBottom: 14 },
-  label: { fontFamily: 'Inter_500Medium', fontSize: 14, color: C.navy, marginBottom: 4 },
-  hint: { fontFamily: 'Inter_400Regular', fontSize: 12, color: C.muted, marginBottom: 5 },
-  input: {
-    fontFamily: 'Inter_400Regular', fontSize: 16, color: C.navy,
-    borderWidth: 1, borderColor: C.border, borderRadius: 10,
-    paddingHorizontal: 14, paddingVertical: 12, backgroundColor: C.cream,
-  },
-  inputMulti: { minHeight: 80, textAlignVertical: 'top', paddingTop: 12 },
-  toggleRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingTop: 8,
-  },
-
-  cueIntro: {
-    fontFamily: 'Inter_400Regular', fontSize: 13, color: C.muted,
-    lineHeight: 19, marginBottom: 14,
-  },
-
-  errBanner: {
-    backgroundColor: C.errBg, borderRadius: 10, padding: 14, marginTop: 16,
-    borderLeftWidth: 3, borderLeftColor: C.err,
-  },
-  errText: { fontFamily: 'Inter_400Regular', fontSize: 14, color: C.err },
-
-  warnCard: {
-    backgroundColor: C.warnBg, borderRadius: 12, padding: 16, marginTop: 16,
-    borderLeftWidth: 3, borderLeftColor: C.warn,
-  },
-  warnTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: C.warn, marginBottom: 8 },
-  warnText: { fontFamily: 'Inter_400Regular', fontSize: 13, color: C.warn, lineHeight: 18, marginBottom: 6 },
-  doneWarnBtn: { backgroundColor: C.warn, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 8 },
-  doneWarnText: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: C.white },
+  label: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: ui.text, marginBottom: 6 },
+  required: { color: ui.danger },
+  hint: { fontFamily: 'Inter_400Regular', fontSize: 13, lineHeight: 19, color: ui.muted, marginBottom: 7 },
+  input: { minHeight: 50, fontFamily: 'Inter_500Medium', fontSize: 16, color: ui.text, borderWidth: 1, borderColor: ui.line, borderRadius: radius.medium, paddingHorizontal: 12, backgroundColor: ui.canvas },
+  multiline: { minHeight: 88, paddingTop: 12, textAlignVertical: 'top' },
+  rtlInput: { fontFamily: undefined, textAlign: 'right', writingDirection: 'rtl' },
+  toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 16, paddingTop: 4 },
+  toggleCopy: { flex: 1 },
+  intro: { fontFamily: 'Inter_400Regular', fontSize: 14, lineHeight: 21, color: ui.muted, marginBottom: 18 },
+  errorPanel: { backgroundColor: ui.dangerSoft, borderLeftWidth: 3, borderLeftColor: ui.danger, borderRadius: radius.small, padding: 12, marginTop: 16 },
+  errorText: { fontFamily: 'Inter_400Regular', fontSize: 13, color: ui.danger },
+  warningPanel: { backgroundColor: ui.warningSoft, borderLeftWidth: 3, borderLeftColor: ui.warning, borderRadius: radius.medium, padding: 16, marginTop: 16 },
+  warningTitle: { fontFamily: 'Inter_700Bold', fontSize: 17, color: ui.warning, marginBottom: 8 },
+  warningText: { fontFamily: 'Inter_400Regular', fontSize: 13, lineHeight: 19, color: ui.warning, marginBottom: 6 },
+  warningButton: { minHeight: 46, backgroundColor: ui.warning, borderRadius: radius.medium, alignItems: 'center', justifyContent: 'center', marginTop: 10 },
+  warningButtonText: { fontFamily: 'Inter_700Bold', fontSize: 15, color: ui.surface },
+  rtlText: { fontFamily: undefined, textAlign: 'right', writingDirection: 'rtl' },
 });
