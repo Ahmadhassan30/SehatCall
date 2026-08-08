@@ -1,11 +1,27 @@
 """
-Uplift AI service layer for DAWA P0-B.
+Uplift AI service layer for DAWA.
 
 All HTTP communication with the Uplift API is centralised here.
 No raw Uplift calls should appear in route handlers.
 
 Singapore endpoint (ap-southeast-1) is used exclusively — this is the only
 region that supports outbound calls to Pakistani phone numbers.
+
+─────────────────────────────────────────────
+P0-A CANONICAL FUNCTIONS (used by test_call.py)
+─────────────────────────────────────────────
+  dispatch_call()   — place one call using UPLIFT_ASSISTANT_ID from settings
+  get_call_status() — fetch recent sessions from Uplift (no SQLite merge)
+
+─────────────────────────────────────────────
+FUTURE-PHASE HELPERS (preserved, not called by P0-A paths)
+─────────────────────────────────────────────
+  create_assistant()                    — bootstrap script only
+  get_or_create_medication_assistant()  — P0-B per-medication caching
+  update_assistant_instructions()       — P0-B shared-assistant PATCH path
+  get_call_log()                        — used by future_calls.GET /api/call-log
+  _append_call_log()                    — used by future-phase dispatch
+  _build_instructions()                 — used by create_assistant
 """
 
 from __future__ import annotations
@@ -18,28 +34,8 @@ import httpx
 from fastapi import HTTPException
 
 from app.config import UPLIFT_BASE_URL, settings
-from app.services.call_store import append_call, get_all_calls
 
 logger = logging.getLogger("dawa.uplift")
-
-# ---------------------------------------------------------------------------
-# Per-medication assistant cache
-# ---------------------------------------------------------------------------
-# Maps medication_name -> realtimeAssistantId.
-# Populated lazily on first dispatch for each medication; survives the process
-# lifetime. Each medication gets its own Uplift assistant with instructions
-# baked in at creation time, eliminating the PATCH-before-call race condition
-# that would cause concurrent calls to speak the wrong medication name.
-_medication_assistant_cache: dict[str, str] = {}
-
-
-def get_call_log() -> list[dict]:
-    """Return persisted call log from SQLite, most-recent first."""
-    return get_all_calls(limit=50)
-
-
-def _append_call_log(log_id: str, call_id: str, medication: str, phone_masked: str = "") -> None:
-    append_call(log_id=log_id, call_id=call_id, medication=medication, phone_masked=phone_masked)
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +92,6 @@ def _raise_for_uplift_error(response: httpx.Response) -> None:
     }
 
     if status == 409:
-        # 409 can mean either "number busy" or "duplicate in-flight call"
         detail = f"Uplift conflict (number busy or duplicate call in flight): {uplift_message}"
         raise HTTPException(status_code=409, detail=detail)
 
@@ -105,55 +100,180 @@ def _raise_for_uplift_error(response: httpx.Response) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Assistant instructions builder
+# ── P0-A CANONICAL: Outbound call dispatch ──────────────────────────────────
 # ---------------------------------------------------------------------------
+
+async def dispatch_call() -> dict[str, Any]:
+    """
+    Place a real outbound Urdu medication-reminder call to TEST_PHONE_NUMBER.
+
+    P0-A canonical path:
+      1. Validate UPLIFT_ASSISTANT_ID — 503 if absent.
+      2. Validate TEST_PHONE_NUMBER   — 503 if absent.
+      3. Generate Idempotency-Key.
+      4. POST to Uplift /calls with the configured assistant ID.
+      5. Return {"callId": str, "status": "dispatched"}.
+
+    This function:
+      - NEVER creates an assistant dynamically.
+      - NEVER inspects or accepts a medication name.
+      - NEVER writes to SQLite.
+      - NEVER writes adherence data.
+    """
+    if not settings.uplift_assistant_id:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "UPLIFT_ASSISTANT_ID is not configured. "
+                "Run scripts/create_uplift_assistant.py first, then set the "
+                "returned realtimeAssistantId as UPLIFT_ASSISTANT_ID in Replit Secrets."
+            ),
+        )
+
+    if not settings.test_phone_number:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "TEST_PHONE_NUMBER is not configured. "
+                "Add your Pakistani test phone number to Replit Secrets as TEST_PHONE_NUMBER."
+            ),
+        )
+
+    idempotency_key = str(uuid.uuid4())
+    masked = _mask_phone(settings.test_phone_number)
+    logger.info(
+        "UPLIFT_CALL_REQUESTED",
+        extra={
+            "assistantId": settings.uplift_assistant_id,
+            "to": masked,
+            "idempotencyKey": idempotency_key,
+        },
+    )
+
+    payload = {
+        "assistantId": settings.uplift_assistant_id,
+        "to": settings.test_phone_number,
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{UPLIFT_BASE_URL}/calls",
+            json=payload,
+            headers={
+                **_auth_headers(),
+                "Idempotency-Key": idempotency_key,
+            },
+        )
+
+    _raise_for_uplift_error(response)
+    data = response.json()
+
+    call_id = data.get("callId") or data.get("id") or data.get("sessionId") or "unknown"
+    logger.info("UPLIFT_CALL_DISPATCHED", extra={"callId": call_id, "to": masked})
+
+    return {"callId": call_id, "status": "dispatched"}
+
+
+# ---------------------------------------------------------------------------
+# ── P0-A CANONICAL: Call / session status ───────────────────────────────────
+# ---------------------------------------------------------------------------
+
+async def get_call_status(limit: int = 10) -> list[dict[str, Any]]:
+    """
+    Retrieve recent Uplift session states for the configured assistant.
+
+    P0-A canonical path: queries Uplift directly; no SQLite merge.
+    Raises 503 if UPLIFT_ASSISTANT_ID is not configured.
+    """
+    if not settings.uplift_assistant_id:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "UPLIFT_ASSISTANT_ID is not configured. "
+                "Complete the assistant bootstrap step before checking call status."
+            ),
+        )
+
+    logger.info(
+        "UPLIFT_CALL_STATUS_CHECKED",
+        extra={"assistantId": settings.uplift_assistant_id, "limit": limit},
+    )
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            f"{UPLIFT_BASE_URL}/realtime-assistants/{settings.uplift_assistant_id}/sessions",
+            params={"limit": limit},
+            headers=_auth_headers(),
+        )
+
+    _raise_for_uplift_error(response)
+    data = response.json()
+    raw_sessions: list[dict] = data if isinstance(data, list) else data.get("sessions", [])
+    return [_normalise_session(s) for s in raw_sessions]
+
+
+def _normalise_session(session: dict[str, Any]) -> dict[str, Any]:
+    """Extract the fields relevant to P0-A status inspection."""
+    return {
+        "sessionId": session.get("sessionId") or session.get("id"),
+        "callId": session.get("callId"),
+        "status": session.get("status"),
+        "dispatched": session.get("dispatched"),
+        "dialing": session.get("dialing"),
+        "ringing": session.get("ringing"),
+        "answered": session.get("answered"),
+        "completed": session.get("completed"),
+        "failed": session.get("failed"),
+        "failureReason": session.get("failureReason"),
+        "startedAt": session.get("startedAt") or session.get("createdAt"),
+        "endedAt": session.get("endedAt"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# ── FUTURE-PHASE HELPERS ─────────────────────────────────────────────────────
+# These functions are NOT called by any P0-A code path.  They are preserved
+# here for use by future phases (P0-B, P1, etc.) and for the bootstrap script.
+# ---------------------------------------------------------------------------
+
+def get_call_log() -> list[dict]:
+    """Return persisted call log from SQLite, most-recent first. (Future-phase.)"""
+    from app.services.call_store import get_all_calls  # lazy — not loaded in P0-A
+    return get_all_calls(limit=50)
+
+
+def _append_call_log(log_id: str, call_id: str, medication: str, phone_masked: str = "") -> None:
+    """Append a call record to SQLite. (Future-phase.)"""
+    from app.services.call_store import append_call  # lazy — not loaded in P0-A
+    append_call(log_id=log_id, call_id=call_id, medication=medication, phone_masked=phone_masked)
+
 
 def _build_instructions(medication_name: str) -> str:
     """
     Build medication-aware Urdu instructions for the Uplift realtime assistant.
-
-    The assistant will:
-    - Greet the patient warmly in Urdu
-    - Ask specifically whether they took the named medication today
-    - Confirm their response ("haan" = yes / "nahin" = no)
-    - Thank them and end the call
-    - NEVER give medical advice or discuss dosage
+    Used by the bootstrap script and future per-medication assistant creation.
     """
     return (
         "آپ DAWA کے ایک مددگار اسسٹنٹ ہیں جو مریضوں کو ادویات یاد دلاتے ہیں۔ "
-        # You are a DAWA assistant that reminds patients about their medicines.
         "صرف اردو میں بات کریں۔ "
-        # Speak only in Urdu.
         "پہلے مریض کو سلام کریں اور پوچھیں کہ وہ کیسے ہیں۔ "
-        # First greet the patient and ask how they are.
         f"پھر پوچھیں: 'کیا آپ نے آج اپنی دوائی {medication_name} لی ہے؟' "
-        # Then ask: 'Did you take your medicine [medication_name] today?'
         "اگر مریض 'ہاں' کہیں تو خوشی سے تصدیق کریں اور کہیں 'بہت اچھا، شکریہ'۔ "
-        # If patient says 'haan' (yes), confirm warmly: 'Very good, thank you.'
         "اگر مریض 'نہیں' کہیں تو صرف شکریہ کہیں اور تجویز کریں کہ وہ اپنے ڈاکٹر سے رابطہ کریں۔ "
-        # If patient says 'nahin' (no), only thank them and suggest they contact their doctor — never tell them to take the medicine.
         "صرف دوائی لینے کی تصدیق کریں — خوراک، ضمنی اثرات یا طبی معلومات پر بالکل بات نہ کریں۔ "
-        # Only confirm adherence — never discuss dose, side effects, or medical information.
         "گفتگو مختصر اور قدرتی رکھیں۔ "
-        # Keep the conversation brief and natural.
         "اندرونی تفصیلات ظاہر نہ کریں۔"
-        # Do NOT reveal internal implementation details.
     )
 
 
-# ---------------------------------------------------------------------------
-# Assistant creation
-# ---------------------------------------------------------------------------
-
 async def create_assistant(
     name: str = "DAWA Urdu Medication Reminder",
-    medication_name: str = "آپ کی دوائی",  # default: "your medicine"
+    medication_name: str = "آپ کی دوائی",
 ) -> dict[str, Any]:
     """
     Create a new Uplift realtime assistant configured for Urdu outbound medication calls.
 
-    This is intended to be called once via the bootstrap script, not on server startup.
-
+    Called once via scripts/create_uplift_assistant.py — not on server startup.
     Returns the full Uplift response dict (contains realtimeAssistantId).
     """
     logger.info("UPLIFT_ASSISTANT_CREATE_REQUEST", extra={"name": name})
@@ -191,24 +311,14 @@ async def create_assistant(
     return data
 
 
-# ---------------------------------------------------------------------------
-# Per-medication assistant — lazy creation with caching
-# ---------------------------------------------------------------------------
+# Maps medication_name -> realtimeAssistantId (future-phase in-process cache).
+_medication_assistant_cache: dict[str, str] = {}
+
 
 async def get_or_create_medication_assistant(medication_name: str) -> str:
     """
-    Return a cached Uplift assistant ID for *medication_name*, creating a new
-    assistant on first use if one is not already cached.
-
-    Each unique medication name gets its own Uplift realtime assistant with the
-    correct instructions baked in at creation time.  This eliminates the
-    PATCH-then-call race condition: because we never mutate a shared assistant,
-    concurrent calls for different medications each use a dedicated assistant
-    and always speak the correct medication name.
-
-    The cache is in-process memory (dict keyed by medication name).  It survives
-    the server process lifetime and resets only on restart, which is acceptable —
-    assistants are lightweight and reusable across calls for the same medication.
+    Return a cached Uplift assistant ID for *medication_name*, creating one on
+    first use if not already cached.  (Future-phase — not called by P0-A dispatch_call.)
     """
     if medication_name in _medication_assistant_cache:
         cached_id = _medication_assistant_cache[medication_name]
@@ -218,10 +328,7 @@ async def get_or_create_medication_assistant(medication_name: str) -> str:
         )
         return cached_id
 
-    logger.info(
-        "MEDICATION_ASSISTANT_CREATE_START",
-        extra={"medication": medication_name},
-    )
+    logger.info("MEDICATION_ASSISTANT_CREATE_START", extra={"medication": medication_name})
     data = await create_assistant(
         name=f"DAWA Urdu - {medication_name}",
         medication_name=medication_name,
@@ -241,21 +348,10 @@ async def get_or_create_medication_assistant(medication_name: str) -> str:
     return assistant_id
 
 
-# ---------------------------------------------------------------------------
-# Assistant instructions update — kept for bootstrap / admin use only
-# ---------------------------------------------------------------------------
-
 async def update_assistant_instructions(medication_name: str) -> None:
     """
-    PATCH the base Uplift assistant's instructions to include a specific
-    medication name.
-
-    NOTE: This function is intentionally NOT called by dispatch_call() anymore.
-    dispatch_call() uses get_or_create_medication_assistant() instead, which
-    avoids the shared-assistant mutation race condition entirely.
-
-    This function remains available for the bootstrap script and any admin
-    tooling that needs to update the base assistant's default instructions.
+    PATCH the base Uplift assistant's instructions to include a specific medication name.
+    (Future-phase — not called by P0-A dispatch_call.)
     """
     if not settings.uplift_assistant_id:
         raise HTTPException(
@@ -265,11 +361,6 @@ async def update_assistant_instructions(medication_name: str) -> None:
                 "Run scripts/create_uplift_assistant.py first."
             ),
         )
-
-    logger.info(
-        "UPLIFT_ASSISTANT_UPDATE_REQUEST",
-        extra={"assistantId": settings.uplift_assistant_id, "medication": medication_name},
-    )
 
     payload = {"instructions": _build_instructions(medication_name)}
 
@@ -285,201 +376,3 @@ async def update_assistant_instructions(medication_name: str) -> None:
         "UPLIFT_ASSISTANT_UPDATED",
         extra={"assistantId": settings.uplift_assistant_id, "medication": medication_name},
     )
-
-
-# ---------------------------------------------------------------------------
-# Outbound call dispatch
-# ---------------------------------------------------------------------------
-
-async def dispatch_call(medication_name: str = "آپ کی دوائی") -> dict[str, Any]:
-    """
-    Place a real outbound Urdu medication-reminder call to TEST_PHONE_NUMBER.
-
-    Steps:
-    1. Validate required secrets (UPLIFT_ASSISTANT_ID, TEST_PHONE_NUMBER).
-    2. PATCH the assistant instructions to embed the specific medication name.
-    3. Dispatch the call via Uplift.
-    4. Append an entry to the in-memory call log.
-
-    Returns a safe dict: {"callId": str, "status": "dispatched", "medication": str, "logId": str}.
-    NOTE: "dispatched" means the request was accepted and dialling was initiated.
-          It does NOT mean the call was answered or that a conversation occurred.
-    """
-    # Validate call-time required secrets
-    if not settings.test_phone_number:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "TEST_PHONE_NUMBER is not configured. "
-                "Add your Pakistani test phone number to Replit Secrets as TEST_PHONE_NUMBER."
-            ),
-        )
-
-    # Resolve a per-medication assistant (create on first use, cached thereafter).
-    # This replaces the old PATCH-before-call approach: each medication has its own
-    # Uplift assistant with the correct instructions baked in, so concurrent calls
-    # for different medications never interfere with each other.
-    medication_assistant_id = await get_or_create_medication_assistant(medication_name)
-
-    idempotency_key = str(uuid.uuid4())
-    log_id = str(uuid.uuid4())
-    masked = _mask_phone(settings.test_phone_number)
-    logger.info(
-        "UPLIFT_CALL_REQUESTED",
-        extra={
-            "assistantId": medication_assistant_id,
-            "to": masked,
-            "medication": medication_name,
-            "idempotencyKey": idempotency_key,
-        },
-    )
-
-    payload = {
-        "assistantId": medication_assistant_id,
-        "to": settings.test_phone_number,
-        "metadata": {
-            "dawa_log_id": log_id,
-            "medication": medication_name,
-        },
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{UPLIFT_BASE_URL}/calls",
-            json=payload,
-            headers={
-                **_auth_headers(),
-                "Idempotency-Key": idempotency_key,
-            },
-        )
-
-    _raise_for_uplift_error(response)
-    data = response.json()
-
-    call_id = data.get("callId") or data.get("id") or data.get("sessionId") or "unknown"
-    logger.info(
-        "UPLIFT_CALL_DISPATCHED",
-        extra={"callId": call_id, "to": masked, "medication": medication_name},
-    )
-
-    # Record in persistent call log
-    _append_call_log(log_id=log_id, call_id=call_id, medication=medication_name, phone_masked=masked)
-
-    # Only return safe, non-secret information
-    return {
-        "callId": call_id,
-        "status": "dispatched",
-        "medication": medication_name,
-        "logId": log_id,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Call / session status
-# ---------------------------------------------------------------------------
-
-async def get_call_status(limit: int = 10) -> list[dict[str, Any]]:
-    """
-    Retrieve recent Uplift session states for the configured assistant,
-    merged with locally persisted call records so history survives restarts.
-
-    - Live Uplift sessions take precedence for calls Uplift still knows about.
-    - Locally persisted records fill in any calls that have aged out of Uplift's
-      session history window.
-
-    Returns a normalised list of compact session summaries, most-recent first.
-    The caller is responsible for polling at a polite cadence (2–5 seconds).
-    """
-    from app.services.call_store import get_all_calls as _local_calls
-
-    if not settings.uplift_assistant_id:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "UPLIFT_ASSISTANT_ID is not configured. "
-                "Complete the assistant bootstrap step before checking call status."
-            ),
-        )
-
-    logger.info(
-        "UPLIFT_CALL_STATUS_CHECKED",
-        extra={"assistantId": settings.uplift_assistant_id, "limit": limit},
-    )
-
-    # Fetch live sessions from Uplift
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{UPLIFT_BASE_URL}/realtime-assistants/{settings.uplift_assistant_id}/sessions",
-                params={"limit": limit},
-                headers=_auth_headers(),
-            )
-        _raise_for_uplift_error(response)
-        data = response.json()
-        raw_sessions: list[dict] = data if isinstance(data, list) else data.get("sessions", [])
-        live_sessions = [_normalise_session(s) for s in raw_sessions]
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning("UPLIFT_STATUS_FETCH_FAILED", extra={"error": str(exc)})
-        live_sessions = []
-
-    # Build a set of callIds Uplift returned so we can avoid duplicates
-    live_call_ids: set[str] = {
-        s["callId"] for s in live_sessions if s.get("callId")
-    }
-    live_session_ids: set[str] = {
-        s["sessionId"] for s in live_sessions if s.get("sessionId")
-    }
-
-    # Pull persisted local records; exclude any that are already in the live response
-    local_records = _local_calls(limit=limit)
-    merged: list[dict[str, Any]] = list(live_sessions)
-    for record in local_records:
-        call_id = record.get("callId")
-        if call_id and call_id in live_call_ids:
-            continue  # already represented by a live entry
-        if call_id and call_id in live_session_ids:
-            continue
-        # Emit a minimal status-compatible entry from the local record.
-        # Sensitive fields (medication, phoneMasked) are intentionally omitted
-        # because this endpoint is unauthenticated — full details are available
-        # only via the admin-protected GET /api/call-log endpoint.
-        merged.append(
-            {
-                "sessionId": record["logId"],
-                "callId": record["callId"],
-                "status": record["status"],
-                "dispatched": record["dispatchedAt"],
-                "dialing": None,
-                "ringing": None,
-                "answered": None,
-                "completed": None,
-                "failed": None,
-                "failureReason": None,
-                "startedAt": record["dispatchedAt"],
-                "endedAt": None,
-                "source": "local",
-            }
-        )
-
-    # Return up to `limit` entries (live ones first, they're already ordered)
-    return merged[:limit]
-
-
-def _normalise_session(session: dict[str, Any]) -> dict[str, Any]:
-    """Extract the fields relevant to P0-B status inspection."""
-    return {
-        "sessionId": session.get("sessionId") or session.get("id"),
-        "callId": session.get("callId"),
-        "status": session.get("status"),
-        "dispatched": session.get("dispatched"),
-        "dialing": session.get("dialing"),
-        "ringing": session.get("ringing"),
-        "answered": session.get("answered"),
-        "completed": session.get("completed"),
-        "failed": session.get("failed"),
-        "failureReason": session.get("failureReason"),
-        "startedAt": session.get("startedAt") or session.get("createdAt"),
-        "endedAt": session.get("endedAt"),
-    }

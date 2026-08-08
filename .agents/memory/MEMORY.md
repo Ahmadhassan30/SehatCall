@@ -1,0 +1,1 @@
+- [P0-A vs future-phase separation](p0a-future-separation.md) — P0-A routes live in test_call.py; future-phase (call-log, webhook, adherence) in future_calls.py, unregistered.
