@@ -240,7 +240,7 @@ async def _do_dispatch_call(patient: dict, medication: dict) -> dict:
     if lock.locked() or sched.has_active_call(patient["id"]):
         raise HTTPException(
             status_code=409,
-            detail="Another DAWA call is currently active for this patient",
+            detail="Another SehatCall call is currently active for this patient",
         )
 
     async with lock:
@@ -248,7 +248,7 @@ async def _do_dispatch_call(patient: dict, medication: dict) -> dict:
         if sched.has_active_call(patient["id"]):
             raise HTTPException(
                 status_code=409,
-                detail="Another DAWA call is currently active for this patient",
+                detail="Another SehatCall call is currently active for this patient",
             )
 
         dose_event = dawa_store.create_dose_event(
@@ -395,7 +395,7 @@ async def schedule_demo_call(
         "scheduledTime": fire_at_str,
         "serverTimeKarachi": now_karachi.isoformat(),
         "message": (
-            f"DAWA will call {patient['name']} in {body.delaySeconds} second(s). "
+            f"SehatCall will call {patient['name']} in {body.delaySeconds} second(s). "
             "Do not touch the app — the call will be placed automatically."
         ),
     }
@@ -967,14 +967,14 @@ async def set_patient_voice_endpoint(
     patient = _require_patient(caregiver_id)
 
     if not voice_catalog.is_valid_voice(body.voiceId):
-        raise HTTPException(status_code=400, detail="Unknown DAWA voice.")
+        raise HTTPException(status_code=400, detail="Unknown SehatCall voice.")
 
     # Scoped to this patient — another caregiver's in-flight call is irrelevant
     # here, and blocking on it would make voice changes fail at random.
     if sched.has_active_call(patient["id"]):
         raise HTTPException(
             status_code=409,
-            detail="DAWA voice cannot be changed while a call is active",
+            detail="SehatCall voice cannot be changed while a call is active",
         )
 
     # Apply to the patient's OWN assistant, never the shared one. A patient who
@@ -1001,7 +1001,7 @@ async def set_patient_voice_endpoint(
         except Exception:
             raise HTTPException(
                 status_code=502,
-                detail="DAWA couldn't change the voice. Your previous voice is still active.",
+                detail="SehatCall couldn't change the voice. Your previous voice is still active.",
             )
 
     updated = dawa_store.set_patient_voice(
@@ -1026,7 +1026,7 @@ async def preview_voice(
     """
     # Auth validated above; voice catalog is global, no per-patient scoping needed.
     if not voice_catalog.is_valid_voice(voice_id):
-        raise HTTPException(status_code=400, detail="Unknown DAWA voice.")
+        raise HTTPException(status_code=400, detail="Unknown SehatCall voice.")
 
     cache_file = _VOICE_PREVIEW_CACHE / f"{re.sub(r'[^A-Za-z0-9_-]', '_', voice_id)}.mp3"
     if cache_file.exists() and cache_file.stat().st_size > 0:

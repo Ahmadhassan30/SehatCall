@@ -12,7 +12,7 @@ env = { "CI" = "true" }
 runButton = "Project"
 
 [[workflows.workflow]]
-name = "DAWA Backend"
+name = "SehatCall Backend"
 author = "agent"
 
 [[workflows.workflow.tasks]]

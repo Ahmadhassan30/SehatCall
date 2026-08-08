@@ -262,7 +262,7 @@ export function DawaProvider({ children }: { children: React.ReactNode }) {
         setScheduledCall(null);
       }
     } catch (err: unknown) {
-      setLoadError(err instanceof Error ? err.message : 'Failed to connect to DAWA backend');
+      setLoadError(err instanceof Error ? err.message : 'Failed to connect to the SehatCall backend');
     } finally {
       setIsLoading(false);
     }

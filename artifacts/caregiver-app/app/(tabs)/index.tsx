@@ -85,7 +85,7 @@ export default function HomeScreen() {
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
-      <DawaHeader title="DAWA" subtitle={t('home.subtitle', { name: patientName })} />
+      <DawaHeader title="SehatCall" subtitle={t('home.subtitle', { name: patientName })} />
       <ScrollView
         contentContainerStyle={styles.scroll}
         refreshControl={

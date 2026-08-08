@@ -293,6 +293,6 @@ def _build_instructions(
         "fact absent above -> say no verified information, refer to caregiver\n"
         "\n"
         "OPENING\n"
-        f"One short Urdu sentence: greet as DAWA and say «{nick}» time has come. Then STOP.\n"
+        f"One short Urdu sentence: greet as SehatCall and say «{nick}» time has come. Then STOP.\n"
         "Do not ask whether it was taken. Do not repeat the opening later."
     )

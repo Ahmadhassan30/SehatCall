@@ -1,5 +1,5 @@
 /**
- * Better Auth client for the DAWA Caregiver Expo app.
+ * Better Auth client for the SehatCall Expo app.
  *
  * Uses:
  *   - Google OAuth via the Better Auth server (Express/TypeScript API)
@@ -31,7 +31,7 @@ export const authClient = createAuthClient({
     // `never` and breaks session typing across every screen.
     // @ts-expect-error -- cross-package BetterFetch generic mismatch (runtime shape is correct)
     expoClient({
-      scheme: "dawa",
+      scheme: "sehatcall",
       storagePrefix: "dawa", // cookies stored as "dawa_cookie" in SecureStore
       storage: SecureStore,
     }),

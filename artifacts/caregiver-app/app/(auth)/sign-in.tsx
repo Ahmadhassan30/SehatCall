@@ -60,7 +60,7 @@ export default function SignInScreen() {
     <View style={styles.screen}>
       <StatusBar style="dark" />
       <View style={styles.topRow}>
-        <Text style={styles.wordmark}>DAWA</Text>
+        <Text style={styles.wordmark}>SehatCall</Text>
         <LanguageSwitch />
       </View>
 

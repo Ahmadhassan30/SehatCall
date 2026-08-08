@@ -1,11 +1,11 @@
-# DAWA
+# SehatCall
 
 Urdu-first medication companion for low-literacy patients. P0-A is an integration spike proving that a FastAPI backend on Replit can place a real two-way Urdu AI phone call to a Pakistani phone number via the Uplift AI Singapore API.
 
 ## Run & Operate
 
-### DAWA Backend (Python / FastAPI)
-- `cd backend && uvicorn app.main:app --host 0.0.0.0 --port 8000` — start FastAPI server (or use the "DAWA Backend" workflow)
+### SehatCall Backend (Python / FastAPI)
+- `cd backend && uvicorn app.main:app --host 0.0.0.0 --port 8000` — start FastAPI server (or use the "SehatCall Backend" workflow)
 - `cd backend && python scripts/create_uplift_assistant.py` — one-time: create the Uplift Urdu assistant; prints `realtimeAssistantId` to save as `UPLIFT_ASSISTANT_ID` secret
 - `cd backend && python -m pytest tests/ -v` — run all tests (zero Uplift credits consumed)
 
@@ -75,4 +75,4 @@ P0-A proves: FastAPI boots → bootstrap script creates Urdu assistant → `POST
 - Run `create_uplift_assistant.py` BEFORE starting the server for the first time, then add the printed ID as `UPLIFT_ASSISTANT_ID` in Replit Secrets, then restart the workflow.
 - `dispatched` ≠ answered. Uplift has a one-concurrent-outbound-call-per-organisation limit.
 - `pydantic-settings` is a separate package from `pydantic`; `BaseSettings` lives in `pydantic_settings`.
-- Custom workflow (`DAWA Backend`) uses hardcoded port 8000; it does not receive `$PORT` from the artifact system.
+- Custom workflow (`SehatCall Backend`) uses hardcoded port 8000; it does not receive `$PORT` from the artifact system.

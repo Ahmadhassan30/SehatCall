@@ -52,7 +52,7 @@ async def main(medication_name: str, profile: str) -> None:
     spec = ASSISTANT_PROFILES[profile]
 
     print("=" * 60)
-    print("DAWA — Create Uplift Urdu Medication-Reminder Assistant")
+    print("SehatCall - Create Uplift Urdu Medication-Reminder Assistant")
     print("=" * 60)
     print()
     print(f"Profile : {profile}")
@@ -121,7 +121,7 @@ async def main(medication_name: str, profile: str) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Create the DAWA Uplift Urdu assistant.")
+    parser = argparse.ArgumentParser(description="Create the SehatCall Uplift Urdu assistant.")
     parser.add_argument(
         "--profile",
         default="voice-v2",

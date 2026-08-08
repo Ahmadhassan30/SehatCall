@@ -224,7 +224,7 @@ export default function OnboardingScreen() {
         <StatusBar style="dark" />
 
         <View style={styles.header}>
-          <Text style={styles.wordmark}>DAWA</Text>
+          <Text style={styles.wordmark}>SehatCall</Text>
           {session?.user?.name ? (
             <Text style={[styles.greeting, rtl]}>
               {t('onboarding.greeting', { name: session.user.name.split(' ')[0] })}

@@ -36,9 +36,9 @@ from typing import Any
 # default so enabling voice selection does not silently change Razia's voice.
 DEFAULT_VOICE_ID = "helpdesk-agent"
 
-# Fixed Urdu preview line: "Assalam-o-Alaikum Ammi, main DAWA hoon."
+# Fixed Urdu preview line: "Assalam-o-Alaikum Ammi, main SehatCall hoon."
 # Hardcoded server-side — caregiver text is never sent to the TTS endpoint.
-PREVIEW_PHRASE = "السلام علیکم اماں، میں DAWA ہوں۔"
+PREVIEW_PHRASE = "السلام علیکم اماں، میں SehatCall ہوں۔"
 
 # Documented output format used by the Voice V2 assistant's TTS config.
 PREVIEW_OUTPUT_FORMAT = "MP3_22050_32"
@@ -47,9 +47,9 @@ PREVIEW_OUTPUT_FORMAT = "MP3_22050_32"
 _VOICES: list[dict[str, Any]] = [
     {
         "id": DEFAULT_VOICE_ID,
-        "name": "DAWA Helpdesk",
+        "name": "SehatCall Helpdesk",
         "language": "Urdu",
-        "description": "The voice DAWA currently uses for reminder calls.",
+        "description": "The voice SehatCall currently uses for reminder calls.",
     },
     {"id": "v_meklc281", "name": "Urdu — Info/Education V2", "language": "Urdu"},
     {"id": "v_8eelc901", "name": "Urdu — Info/Education", "language": "Urdu"},

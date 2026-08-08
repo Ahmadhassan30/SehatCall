@@ -291,7 +291,7 @@ def test_31_unknown_profile_is_rejected():
 async def test_32_voice_v2_payload_shape_is_correct():
     """config must stay a dict (the earlier 400) and carry the V2 stack + TTL."""
     payload = await _create("voice-v2")
-    assert payload["name"] == "DAWA Voice V2"
+    assert payload["name"] == "SehatCall Voice V2"
     cfg = payload["config"]
     assert isinstance(cfg, dict)
     assert cfg["stt"]["default"]["model"] == "whisper-large-v3"
@@ -393,7 +393,7 @@ async def test_33_hackathon_profile_is_unchanged():
     """Creating V2 must not alter the existing production profile."""
     payload = await _create("hackathon")
     cfg = payload["config"]
-    assert payload["name"] == "DAWA Urdu Medication Reminder"
+    assert payload["name"] == "SehatCall Urdu Medication Reminder"
     assert cfg["stt"]["default"]["provider"] == "soniox"
     assert cfg["llm"]["default"]["model"] == "gemini-2.5-flash"
     assert "session" not in cfg

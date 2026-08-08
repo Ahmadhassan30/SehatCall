@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="DAWA P2",
+    title="SehatCall API",
     description=(
         "Uplift AI phone call integration — proactive Urdu medication reminders. "
         "P0-A conformance preserved; P2 adds in-process scheduler and demo controls."

@@ -310,7 +310,7 @@ def _build_instructions(medication_name: str) -> str:
     Used by the bootstrap script and future per-medication assistant creation.
     """
     return (
-        "آپ DAWA کے ایک مددگار اسسٹنٹ ہیں جو مریضوں کو ادویات یاد دلاتے ہیں۔ "
+        "آپ SehatCall کے ایک مددگار اسسٹنٹ ہیں جو مریضوں کو ادویات یاد دلاتے ہیں۔ "
         "صرف اردو میں بات کریں۔ "
         "پہلے مریض کو سلام کریں اور پوچھیں کہ وہ کیسے ہیں۔ "
         f"پھر پوچھیں: 'کیا آپ نے آج اپنی دوائی {medication_name} لی ہے؟' "
@@ -335,7 +335,7 @@ def build_base_prompt_v2() -> str:
     patient-facing utterance is specified in Urdu.
     """
     return (
-        "You are DAWA, an Urdu-first medication companion for an elderly, "
+        "You are SehatCall, an Urdu-first medication companion for an elderly, "
         "low-literacy Pakistani patient.\n"
         "\n"
         "LANGUAGE\n"
@@ -393,7 +393,7 @@ def build_base_prompt_v2() -> str:
 
 # Greeting instructions must NOT hardcode clinical truth — per-call context supplies it.
 _GREETING_INSTRUCTIONS_V2 = (
-    "اردو میں مختصر سلام کریں اور اپنا تعارف DAWA کے طور پر کرائیں۔ "
+    "اردو میں مختصر سلام کریں اور اپنا تعارف SehatCall کے طور پر کرائیں۔ "
     "اگر اس کال کی verified facts میں دوائی کا nickname موجود ہے تو ایک ہی مختصر جملے میں "
     "بتائیں کہ اس کا وقت ہو گیا ہے۔ پھر رک جائیں اور مریض کا انتظار کریں۔ "
     "یہ مت پوچھیں کہ دوائی لی یا نہیں۔ ایک جملے سے زیادہ نہ بولیں۔"
@@ -404,14 +404,14 @@ _GREETING_INSTRUCTIONS_V2 = (
 # current Uplift Realtime Assistant docs (Groq Whisper STT + Groq LLM).
 ASSISTANT_PROFILES: dict[str, dict[str, Any]] = {
     "hackathon": {
-        "name": "DAWA Urdu Medication Reminder",
+        "name": "SehatCall Urdu Medication Reminder",
         "stt": {"provider": "soniox", "model": "stt-rt-v4", "language": "ur"},
         "tts": {"provider": "upliftai", "voiceId": "helpdesk-agent",
                 "outputFormat": "MP3_22050_32"},
         "llm": {"provider": "google", "model": "gemini-2.5-flash"},
     },
     "voice-v2": {
-        "name": "DAWA Voice V2",
+        "name": "SehatCall Voice V2",
         "stt": {"provider": "groq", "model": "whisper-large-v3", "language": "ur"},
         "tts": {"provider": "upliftai", "voiceId": "helpdesk-agent",
                 "outputFormat": "MP3_22050_32"},
@@ -495,7 +495,7 @@ async def create_assistant(
         agent = {
             "instructions": _build_instructions(medication_name),
             "initialGreeting": True,
-            "greetingInstructions": "السلام علیکم! میں DAWA کا ادویات یاد دہانی اسسٹنٹ ہوں۔",
+            "greetingInstructions": "السلام علیکم! میں SehatCall کا ادویات یاد دہانی اسسٹنٹ ہوں۔",
             "tools": [],
         }
 
@@ -517,7 +517,7 @@ async def create_assistant(
 
     payload = {
         "name": resolved_name,
-        "description": "DAWA Urdu-first medication companion",
+        "description": "SehatCall Urdu-first medication companion",
         "public": False,
         "config": config,
     }
@@ -587,7 +587,7 @@ async def get_or_create_patient_assistant(patient: dict[str, Any]) -> str:
         voice_id = DEFAULT_VOICE_ID
 
     data = await create_assistant(
-        name=f"DAWA — {patient.get('name') or patient_id}",
+        name=f"SehatCall - {patient.get('name') or patient_id}",
         profile="voice-v2",
         voice_id=voice_id,
     )
@@ -613,7 +613,7 @@ _VERIFICATION_INSTRUCTIONS = """\
 VERIFICATION CALL — this is NOT a medication reminder.
 
 Say exactly this, in Urdu, and nothing else:
-"السلام علیکم۔ یہ DAWA کی تصدیقی کال ہے۔ آپ کا کوڈ ہے: {spoken}۔ دوبارہ سن لیجیے: {spoken}۔ شکریہ۔"
+"السلام علیکم۔ یہ SehatCall کی تصدیقی کال ہے۔ آپ کا کوڈ ہے: {spoken}۔ دوبارہ سن لیجیے: {spoken}۔ شکریہ۔"
 
 Rules:
 - Read each digit separately, slowly, with a clear pause between digits.
@@ -640,7 +640,7 @@ async def dispatch_verification_call(phone_e164: str, code: str) -> str:
         raise HTTPException(
             status_code=503,
             detail=(
-                "UPLIFT_ASSISTANT_ID is not configured, so DAWA cannot place the "
+                "UPLIFT_ASSISTANT_ID is not configured, so SehatCall cannot place the "
                 "verification call. Run scripts/create_uplift_assistant.py first."
             ),
         )
@@ -700,7 +700,7 @@ async def get_or_create_medication_assistant(medication_name: str) -> str:
 
     logger.info("MEDICATION_ASSISTANT_CREATE_START", extra={"medication": medication_name})
     data = await create_assistant(
-        name=f"DAWA Urdu - {medication_name}",
+        name=f"SehatCall Urdu - {medication_name}",
         medication_name=medication_name,
     )
     assistant_id: str | None = data.get("realtimeAssistantId")
@@ -765,7 +765,7 @@ async def update_assistant_voice(voice_id: str, assistant_id: str | None = None)
     persisting a voice the assistant is not actually using.
     """
     if not is_valid_voice(voice_id):
-        raise HTTPException(status_code=400, detail="Unknown DAWA voice.")
+        raise HTTPException(status_code=400, detail="Unknown SehatCall voice.")
 
     # Default to the shared base assistant so existing callers keep working;
     # per-patient callers pass their own assistant and therefore cannot change
@@ -812,7 +812,7 @@ async def synthesize_voice_preview(voice_id: str) -> bytes:
     Returns raw MP3 bytes.
     """
     if not is_valid_voice(voice_id):
-        raise HTTPException(status_code=400, detail="Unknown DAWA voice.")
+        raise HTTPException(status_code=400, detail="Unknown SehatCall voice.")
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(

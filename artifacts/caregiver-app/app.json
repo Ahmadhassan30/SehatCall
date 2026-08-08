@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "DAWA Caregiver",
-    "slug": "caregiver-app",
+    "name": "SehatCall",
+    "slug": "sehatcall",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "dawa",
+    "scheme": "sehatcall",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {

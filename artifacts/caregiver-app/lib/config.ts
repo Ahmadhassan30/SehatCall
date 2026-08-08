@@ -10,7 +10,7 @@
  * The auth client always uses the env-var URL for session management.
  */
 
-export const APP_DISPLAY_NAME = "DAWA Caregiver";
+export const APP_DISPLAY_NAME = "SehatCall";
 
 /**
  * Public API base URL used by the Better Auth client.

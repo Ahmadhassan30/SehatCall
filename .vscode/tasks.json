@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "DAWA: Backend",
+      "label": "SehatCall: Backend",
       "type": "shell",
       "command": "${workspaceFolder}/scripts/local/backend.sh",
       "isBackground": true,
@@ -14,7 +14,7 @@
       "problemMatcher": []
     },
     {
-      "label": "DAWA: API Server",
+      "label": "SehatCall: API Server",
       "type": "shell",
       "command": "${workspaceFolder}/scripts/local/api-server.sh",
       "isBackground": true,
@@ -26,7 +26,7 @@
       "problemMatcher": []
     },
     {
-      "label": "DAWA: Expo",
+      "label": "SehatCall: Expo",
       "type": "shell",
       "command": "${workspaceFolder}/scripts/local/expo.sh",
       "isBackground": true,
@@ -38,12 +38,12 @@
       "problemMatcher": []
     },
     {
-      "label": "DAWA: Start Local Stack",
+      "label": "SehatCall: Start Local Stack",
       "dependsOrder": "parallel",
       "dependsOn": [
-        "DAWA: Backend",
-        "DAWA: API Server",
-        "DAWA: Expo"
+        "SehatCall: Backend",
+        "SehatCall: API Server",
+        "SehatCall: Expo"
       ],
       "problemMatcher": []
     }

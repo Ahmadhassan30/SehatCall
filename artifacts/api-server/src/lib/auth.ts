@@ -58,6 +58,7 @@ function tryCreateAuth(): AuthResult {
     const db = new Database(path.join(DATA_DIR, "auth.db"));
 
     const options: BetterAuthOptions = {
+      appName: "SehatCall",
       secret: secret!,
       baseURL: url!,
       basePath: "/api/auth",
@@ -72,6 +73,9 @@ function tryCreateAuth(): AuthResult {
 
       trustedOrigins: [
         url!,
+        "sehatcall://",
+        "sehatcall://*",
+        // Keep the previous scheme during the mobile migration window.
         "dawa://",
         "dawa://*",
         // Replit workspace dev domains — the Expo web client originates from the

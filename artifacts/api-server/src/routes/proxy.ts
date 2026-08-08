@@ -86,7 +86,7 @@ export function makeProxyToPython(
     });
 
     proxy.setTimeout(DEFAULT_PROXY_TIMEOUT_MS, () => {
-      proxy.destroy(new Error("DAWA backend request timed out."));
+      proxy.destroy(new Error("SehatCall backend request timed out."));
     });
 
     proxy.on("error", (err) => {
@@ -98,9 +98,9 @@ export function makeProxyToPython(
       if (code === "ECONNREFUSED") {
         res.status(502).json({
           error: "DAWA_BACKEND_UNAVAILABLE",
-          detail: "The Python backend is not running. Start the 'DAWA Backend' workflow.",
+          detail: "The Python backend is not running. Start the 'SehatCall Backend' workflow.",
         });
-      } else if (err.message === "DAWA backend request timed out.") {
+      } else if (err.message === "SehatCall backend request timed out.") {
         res.status(504).json({
           error: "DAWA_BACKEND_TIMEOUT",
           detail: "The Python backend took too long to respond. Check the backend logs and try again.",
