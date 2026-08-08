@@ -242,7 +242,7 @@ export default function DawaScreen() {
   async function handleReset() {
     Alert.alert(
       'Reset demo?',
-      'This will clear all call history and scheduled reminders. Razia's medication data will be preserved.',
+      "This will clear all call history and scheduled reminders. Razia's medication data will be preserved.",
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Reset', style: 'destructive', onPress: () => resetDemo() },
