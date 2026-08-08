@@ -27,6 +27,7 @@ def _make_client(
     assistant_id: str | None = "asst-test-123",
     phone: str | None = "+923001234567",
     admin_token: str | None = ADMIN_TOKEN,
+    dev_mode: bool = True,
 ):
     """Create a TestClient with controlled env vars."""
     monkeypatch.setenv("UPLIFTAI_API_KEY", "test-api-key-xyz")
@@ -42,6 +43,9 @@ def _make_client(
         monkeypatch.setenv("DAWA_ADMIN_TOKEN", admin_token)
     else:
         monkeypatch.delenv("DAWA_ADMIN_TOKEN", raising=False)
+    # Default to dev mode so webhook tests can skip signature verification.
+    # Tests that specifically exercise fail-closed behavior override this.
+    monkeypatch.setenv("DAWA_DEV_MODE", "true" if dev_mode else "false")
 
     import importlib
     import app.config as cfg_mod
@@ -521,4 +525,452 @@ def test_build_instructions_nahin_response_is_neutral():
     # Must direct patient to their doctor for the 'nahin' case
     assert "ڈاکٹر" in instructions, (
         "The 'nahin' response must suggest the patient contacts their doctor."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Webhook — POST /api/webhook/call-complete
+# ---------------------------------------------------------------------------
+
+def _make_webhook_signature(secret: str, body: bytes) -> str:
+    """Compute the expected HMAC-SHA256 signature for a webhook payload."""
+    import hashlib
+    import hmac as _hmac
+    digest = _hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
+
+
+def test_webhook_missing_call_id_returns_400(monkeypatch):
+    """Webhook payload without a callId must return 400."""
+    client = _make_client(monkeypatch)
+    response = client.post(
+        "/api/webhook/call-complete",
+        json={"status": "completed"},
+    )
+    assert response.status_code == 400
+    assert "callId" in response.json()["detail"]
+
+
+def test_webhook_invalid_json_returns_400(monkeypatch):
+    """Webhook with a non-JSON body must return 400."""
+    client = _make_client(monkeypatch)
+    response = client.post(
+        "/api/webhook/call-complete",
+        content=b"not-json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 400
+
+
+def test_webhook_no_secret_and_dev_mode_skips_verification(monkeypatch):
+    """When UPLIFT_WEBHOOK_SECRET is unset AND DAWA_DEV_MODE=true, no signature required."""
+    monkeypatch.delenv("UPLIFT_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setenv("DAWA_DEV_MODE", "true")
+    client = _make_client(monkeypatch)
+    response = client.post(
+        "/api/webhook/call-complete",
+        json={"callId": "call-dev-001", "status": "completed", "transcript": "ہاں"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["callId"] == "call-dev-001"
+
+
+def test_webhook_no_secret_and_no_dev_mode_returns_503(monkeypatch):
+    """When UPLIFT_WEBHOOK_SECRET is unset and DAWA_DEV_MODE is false, must return 503 (fail closed)."""
+    monkeypatch.delenv("UPLIFT_WEBHOOK_SECRET", raising=False)
+    client = _make_client(monkeypatch, dev_mode=False)
+    response = client.post(
+        "/api/webhook/call-complete",
+        json={"callId": "call-prod-001", "status": "completed"},
+    )
+    assert response.status_code == 503
+    assert "UPLIFT_WEBHOOK_SECRET" in response.json()["detail"]
+
+
+def test_webhook_no_secret_defaults_to_fail_closed(monkeypatch):
+    """Default (DAWA_DEV_MODE=false) must fail closed when secret is absent."""
+    monkeypatch.delenv("UPLIFT_WEBHOOK_SECRET", raising=False)
+    client = _make_client(monkeypatch, dev_mode=False)
+    response = client.post(
+        "/api/webhook/call-complete",
+        json={"callId": "call-default-001", "status": "completed"},
+    )
+    assert response.status_code == 503
+
+
+def test_webhook_valid_signature_accepted(monkeypatch):
+    """A valid HMAC-SHA256 signature must be accepted."""
+    import json as _json
+    monkeypatch.setenv("UPLIFT_WEBHOOK_SECRET", "test-webhook-secret")
+    client = _make_client(monkeypatch)
+
+    body = _json.dumps({"callId": "call-signed-001", "status": "completed", "transcript": "ہاں"}).encode()
+    sig = _make_webhook_signature("test-webhook-secret", body)
+
+    response = client.post(
+        "/api/webhook/call-complete",
+        content=body,
+        headers={"Content-Type": "application/json", "X-Uplift-Signature": sig},
+    )
+    assert response.status_code == 200
+
+
+def test_webhook_wrong_signature_returns_401(monkeypatch):
+    """A tampered or wrong HMAC-SHA256 signature must return 401."""
+    import json as _json
+    monkeypatch.setenv("UPLIFT_WEBHOOK_SECRET", "test-webhook-secret")
+    client = _make_client(monkeypatch)
+
+    body = _json.dumps({"callId": "call-bad-sig", "status": "completed"}).encode()
+
+    response = client.post(
+        "/api/webhook/call-complete",
+        content=body,
+        headers={"Content-Type": "application/json", "X-Uplift-Signature": "sha256=badhex"},
+    )
+    assert response.status_code == 401
+
+
+def test_webhook_missing_signature_when_secret_set_returns_401(monkeypatch):
+    """When UPLIFT_WEBHOOK_SECRET is set, omitting the signature header must return 401."""
+    monkeypatch.setenv("UPLIFT_WEBHOOK_SECRET", "test-webhook-secret")
+    client = _make_client(monkeypatch)
+
+    response = client.post(
+        "/api/webhook/call-complete",
+        json={"callId": "call-no-sig", "status": "completed"},
+    )
+    assert response.status_code == 401
+
+
+def test_webhook_updates_status_to_taken(monkeypatch):
+    """Webhook with Urdu 'ہاں' in transcript must update call log status to 'taken'."""
+    import json as _json
+    from unittest.mock import patch as _patch
+
+    client = _make_client(monkeypatch)
+
+    # First dispatch a call so there's a log entry to update
+    with _patch("app.services.uplift.httpx.AsyncClient") as mock_class:
+        mock_class.return_value = _mock_http(call_body={"callId": "call-haan-001"})
+        dispatch_resp = client.post(
+            "/api/test-call",
+            json={"medication_name": "Metformin"},
+            headers=ADMIN_HEADER,
+        )
+    assert dispatch_resp.status_code == 200
+
+    # Send webhook with positive adherence signal
+    body = _json.dumps({
+        "callId": "call-haan-001",
+        "status": "completed",
+        "transcript": "مریض نے کہا: ہاں میں نے لی",
+    }).encode()
+    wh_resp = client.post(
+        "/api/webhook/call-complete",
+        content=body,
+        headers={"Content-Type": "application/json"},
+    )
+    assert wh_resp.status_code == 200
+    assert wh_resp.json()["status"] == "taken"
+
+    # Verify the call log now reflects "taken"
+    log_resp = client.get("/api/call-log", headers=ADMIN_HEADER)
+    entries = log_resp.json()
+    entry = next((e for e in entries if e["callId"] == "call-haan-001"), None)
+    assert entry is not None, "Expected log entry for call-haan-001"
+    assert entry["status"] == "taken"
+
+
+def test_webhook_updates_status_to_not_taken(monkeypatch):
+    """Webhook with Urdu 'نہیں' in transcript must update call log status to 'not_taken'."""
+    import json as _json
+    from unittest.mock import patch as _patch
+
+    client = _make_client(monkeypatch)
+
+    with _patch("app.services.uplift.httpx.AsyncClient") as mock_class:
+        mock_class.return_value = _mock_http(call_body={"callId": "call-nahin-001"})
+        dispatch_resp = client.post(
+            "/api/test-call",
+            json={"medication_name": "Aspirin"},
+            headers=ADMIN_HEADER,
+        )
+    assert dispatch_resp.status_code == 200
+
+    body = _json.dumps({
+        "callId": "call-nahin-001",
+        "status": "completed",
+        "transcript": "مریض نے کہا: نہیں ابھی تک نہیں",
+    }).encode()
+    wh_resp = client.post(
+        "/api/webhook/call-complete",
+        content=body,
+        headers={"Content-Type": "application/json"},
+    )
+    assert wh_resp.status_code == 200
+    assert wh_resp.json()["status"] == "not_taken"
+
+    log_resp = client.get("/api/call-log", headers=ADMIN_HEADER)
+    entries = log_resp.json()
+    entry = next((e for e in entries if e["callId"] == "call-nahin-001"), None)
+    assert entry is not None
+    assert entry["status"] == "not_taken"
+
+
+def test_webhook_updates_status_to_no_answer(monkeypatch):
+    """Webhook with 'no_answer' status must update call log status to 'no_answer'."""
+    import json as _json
+    from unittest.mock import patch as _patch
+
+    client = _make_client(monkeypatch)
+
+    with _patch("app.services.uplift.httpx.AsyncClient") as mock_class:
+        mock_class.return_value = _mock_http(call_body={"callId": "call-noanswer-001"})
+        dispatch_resp = client.post(
+            "/api/test-call",
+            json={"medication_name": "Insulin"},
+            headers=ADMIN_HEADER,
+        )
+    assert dispatch_resp.status_code == 200
+
+    body = _json.dumps({
+        "callId": "call-noanswer-001",
+        "status": "no_answer",
+    }).encode()
+    wh_resp = client.post(
+        "/api/webhook/call-complete",
+        content=body,
+        headers={"Content-Type": "application/json"},
+    )
+    assert wh_resp.status_code == 200
+    assert wh_resp.json()["status"] == "no_answer"
+
+    log_resp = client.get("/api/call-log", headers=ADMIN_HEADER)
+    entries = log_resp.json()
+    entry = next((e for e in entries if e["callId"] == "call-noanswer-001"), None)
+    assert entry is not None
+    assert entry["status"] == "no_answer"
+
+
+def test_webhook_explicit_outcome_field_takes_precedence(monkeypatch):
+    """An explicit 'outcome' field in the payload overrides transcript keyword matching."""
+    import json as _json
+    from unittest.mock import patch as _patch
+
+    client = _make_client(monkeypatch)
+
+    with _patch("app.services.uplift.httpx.AsyncClient") as mock_class:
+        mock_class.return_value = _mock_http(call_body={"callId": "call-explicit-001"})
+        client.post("/api/test-call", json={"medication_name": "Paracetamol"}, headers=ADMIN_HEADER)
+
+    # outcome="taken" should win even if transcript has no keywords
+    body = _json.dumps({
+        "callId": "call-explicit-001",
+        "status": "completed",
+        "outcome": "taken",
+        "transcript": "",
+    }).encode()
+    wh_resp = client.post(
+        "/api/webhook/call-complete",
+        content=body,
+        headers={"Content-Type": "application/json"},
+    )
+    assert wh_resp.status_code == 200
+    assert wh_resp.json()["status"] == "taken"
+
+
+def test_webhook_signature_without_sha256_prefix(monkeypatch):
+    """Signature header without 'sha256=' prefix must still be accepted if the hex is correct."""
+    import json as _json
+    import hashlib
+    import hmac as _hmac
+
+    monkeypatch.setenv("UPLIFT_WEBHOOK_SECRET", "test-webhook-secret")
+    client = _make_client(monkeypatch)
+
+    body = _json.dumps({"callId": "call-prefix-001", "status": "no_answer"}).encode()
+    # Compute raw hex without prefix
+    raw_hex = _hmac.new(b"test-webhook-secret", body, hashlib.sha256).hexdigest()
+
+    response = client.post(
+        "/api/webhook/call-complete",
+        content=body,
+        headers={"Content-Type": "application/json", "X-Uplift-Signature": raw_hex},
+    )
+    assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Transcript keyword extraction — unit tests via _extract_adherence_status
+# ---------------------------------------------------------------------------
+
+def _load_extract_fn():
+    """Import _extract_adherence_status from the reloaded api module."""
+    import importlib
+    import app.api.test_call as api_mod
+    importlib.reload(api_mod)
+    return api_mod._extract_adherence_status
+
+
+def test_transcript_urdu_punctuation_taken():
+    """'ہاں،' (with Urdu comma) must be recognised as taken."""
+    fn = _load_extract_fn()
+    result = fn({"status": "completed", "transcript": "ہاں، میں نے لی ہے"})
+    assert result == "taken", f"Expected 'taken', got {result!r}"
+
+
+def test_transcript_urdu_punctuation_not_taken():
+    """'نہیں۔' (with Urdu full-stop) must be recognised as not_taken."""
+    fn = _load_extract_fn()
+    result = fn({"status": "completed", "transcript": "نہیں۔ آج نہیں لی"})
+    assert result == "not_taken", f"Expected 'not_taken', got {result!r}"
+
+
+def test_transcript_english_punctuation_taken():
+    """'yes.' (with ASCII period) must be recognised as taken."""
+    fn = _load_extract_fn()
+    result = fn({"status": "completed", "transcript": "yes. I already took it."})
+    assert result == "taken", f"Expected 'taken', got {result!r}"
+
+
+def test_transcript_english_punctuation_not_taken():
+    """'no,' (with ASCII comma) must be recognised as not_taken."""
+    fn = _load_extract_fn()
+    result = fn({"status": "completed", "transcript": "no, I haven't taken it yet."})
+    assert result == "not_taken", f"Expected 'not_taken', got {result!r}"
+
+
+def test_transcript_structured_patient_turn_only():
+    """
+    When the transcript is a structured list, only patient turns are scanned.
+    An assistant turn containing 'ہاں' (as a confirmation echo) must not
+    trigger a 'taken' outcome when the patient's turn says 'نہیں'.
+    """
+    fn = _load_extract_fn()
+    transcript = [
+        {"role": "assistant", "text": "کیا آپ نے آج دوائی لی؟ ہاں یا نہیں؟"},
+        {"role": "user", "text": "نہیں، ابھی تک نہیں لی۔"},
+    ]
+    result = fn({"status": "completed", "transcript": transcript})
+    assert result == "not_taken", (
+        f"Expected 'not_taken' (patient said نہیں); got {result!r}. "
+        "Assistant turn containing 'ہاں' must not be counted."
+    )
+
+
+def test_transcript_structured_patient_says_yes():
+    """Patient turn with 'ہاں' must yield 'taken' even when assistant also has mixed text."""
+    fn = _load_extract_fn()
+    transcript = [
+        {"role": "assistant", "text": "کیا آپ نے آج میٹفارمن لی؟"},
+        {"role": "user", "text": "ہاں، لی ہے"},
+        {"role": "assistant", "text": "بہت اچھا۔"},
+    ]
+    result = fn({"status": "completed", "transcript": transcript})
+    assert result == "taken", f"Expected 'taken', got {result!r}"
+
+
+def test_transcript_conflict_last_keyword_wins():
+    """
+    If both 'ہاں' and 'نہیں' appear in the patient's transcript, the
+    LAST one encountered wins (the patient's final answer is most reliable).
+    """
+    fn = _load_extract_fn()
+    # Patient initially hesitates ("ہاں... نہیں") — final answer is نہیں
+    result = fn({
+        "status": "completed",
+        "transcript": "ہاں... نہیں، میں بھول گئی",
+    })
+    assert result == "not_taken", (
+        f"Expected 'not_taken' (last keyword نہیں wins); got {result!r}"
+    )
+
+
+def test_transcript_conflict_last_keyword_is_yes():
+    """Last keyword is 'yes' — outcome must be 'taken' even though 'no' appeared earlier."""
+    fn = _load_extract_fn()
+    result = fn({
+        "status": "completed",
+        "transcript": "no wait, yes I did take it",
+    })
+    assert result == "taken", (
+        f"Expected 'taken' (last keyword 'yes' wins); got {result!r}"
+    )
+
+
+def test_transcript_structured_speaker_field_also_recognised():
+    """'speaker' field (alternative to 'role') must work for patient attribution."""
+    fn = _load_extract_fn()
+    transcript = [
+        {"speaker": "agent", "text": "کیا آپ نے دوائی لی؟ ہاں یا نہیں؟"},
+        {"speaker": "caller", "text": "ہاں"},
+    ]
+    result = fn({"status": "completed", "transcript": transcript})
+    assert result == "taken", f"Expected 'taken', got {result!r}"
+
+
+def test_transcript_no_keywords_returns_no_answer():
+    """Transcript with no recognisable keywords must yield 'no_answer'."""
+    fn = _load_extract_fn()
+    result = fn({
+        "status": "completed",
+        "transcript": "مریض خاموش رہے",   # "patient stayed silent" — no yes/no keywords
+    })
+    assert result == "no_answer", f"Expected 'no_answer', got {result!r}"
+
+
+def test_transcript_assistant_only_structured_returns_no_answer():
+    """
+    A structured transcript containing only assistant turns must yield 'no_answer'.
+
+    If the patient never responded, the assistant's question ("ہاں یا نہیں؟") must
+    not be mistaken for patient adherence. This guards against false-taken records
+    when the patient hangs up before speaking.
+    """
+    fn = _load_extract_fn()
+    transcript = [
+        {"role": "assistant", "text": "آپ کو سلام۔ کیا آپ نے آج دوائی لی؟ ہاں یا نہیں بتائیں؟"},
+    ]
+    result = fn({"status": "completed", "transcript": transcript})
+    assert result == "no_answer", (
+        f"Expected 'no_answer' for assistant-only transcript; got {result!r}. "
+        "Assistant speech must never be used to infer patient adherence."
+    )
+
+
+def test_transcript_unrecognised_role_structured_returns_no_answer():
+    """
+    Turns with an unrecognised role (e.g. 'system', 'bot') must not be counted.
+    The outcome must be 'no_answer' when no patient-role turn is present.
+    """
+    fn = _load_extract_fn()
+    transcript = [
+        {"role": "system", "text": "Call initiated."},
+        {"role": "bot", "text": "ہاں میں آپ کا مددگار ہوں۔"},
+        {"role": "agent", "text": "کیا آپ نے میٹفارمن لی؟"},
+    ]
+    result = fn({"status": "completed", "transcript": transcript})
+    assert result == "no_answer", (
+        f"Expected 'no_answer' when only unrecognised roles appear; got {result!r}"
+    )
+
+
+def test_transcript_mixed_attributed_and_unattributed_turns():
+    """
+    When SOME turns have role attribution and others do not, attributed turns govern.
+    Unattributed turns in a mixed list are excluded — they could be system metadata.
+    The patient role attribution must be honoured; unattributed turns are ignored.
+    """
+    fn = _load_extract_fn()
+    transcript = [
+        # No role — should be ignored because other turns ARE attributed
+        {"text": "ہاں (system echo)"},
+        {"role": "assistant", "text": "کیا آپ نے دوائی لی؟"},
+        {"role": "user", "text": "نہیں ابھی تک"},
+    ]
+    result = fn({"status": "completed", "transcript": transcript})
+    assert result == "not_taken", (
+        f"Expected 'not_taken' from patient turn; got {result!r}"
     )

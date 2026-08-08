@@ -32,6 +32,16 @@ class Settings(BaseSettings):
     # If unset those endpoints return 403. Set as DAWA_ADMIN_TOKEN in Replit Secrets.
     dawa_admin_token: str | None = None
 
+    # Webhook secret for verifying Uplift session-complete callbacks.
+    # Set as UPLIFT_WEBHOOK_SECRET in Replit Secrets.
+    uplift_webhook_secret: str | None = None
+
+    # Development mode — when True and UPLIFT_WEBHOOK_SECRET is absent, signature
+    # verification is skipped with a warning (allows local dev without a secret).
+    # Set DAWA_DEV_MODE=true ONLY in development; production must always have a secret.
+    # Defaults to False (fail closed).
+    dawa_dev_mode: bool = False
+
 
 # Module-level singleton — import `settings` everywhere
 settings = Settings()  # raises ValidationError with a clear message if UPLIFTAI_API_KEY is absent
