@@ -62,6 +62,8 @@ data/calls.db-wal
 .env
 .env.*
 !.env.example
+.env.local
+.env.*.local
 
 # ============================================
 # Runtime databases — NEVER COMMIT
@@ -73,6 +75,8 @@ data/calls.db-wal
 *.sqlite
 *.sqlite3
 *.sqlite-journal
+dawa-private-dbs.tar.gz
+transfer/
 
 # ============================================
 # Python

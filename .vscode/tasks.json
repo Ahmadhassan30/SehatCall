@@ -1,0 +1,51 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "DAWA: Backend",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/local/backend.sh",
+      "isBackground": true,
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "DAWA: API Server",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/local/api-server.sh",
+      "isBackground": true,
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "DAWA: Expo",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/local/expo.sh",
+      "isBackground": true,
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "DAWA: Start Local Stack",
+      "dependsOrder": "parallel",
+      "dependsOn": [
+        "DAWA: Backend",
+        "DAWA: API Server",
+        "DAWA: Expo"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
